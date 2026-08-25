@@ -2674,7 +2674,7 @@ async def set_port_speed(
 
         write_result = await asyncio.to_thread(
             _client().set_port_mode, device, port, {"onSpead": speed}, dry_run,
-            require_variable_speed=True,
+            require_variable_speed=True, manual_control=True,
         )
 
         if write_result.get("ai_plus_write_unsupported"):
@@ -2771,7 +2771,8 @@ async def set_port_on(
         assert device is not None
 
         write_result = await asyncio.to_thread(
-            _client().set_port_mode, device, port, {"atType": 2, "onSpead": 10}, dry_run
+            _client().set_port_mode, device, port, {"atType": 2, "onSpead": 10}, dry_run,
+            manual_control=True,
         )
 
         if write_result.get("ai_plus_write_unsupported"):
@@ -2860,7 +2861,8 @@ async def set_port_off(
         assert device is not None
 
         write_result = await asyncio.to_thread(
-            _client().set_port_mode, device, port, {"onSpead": 0, "atType": 1}, dry_run
+            _client().set_port_mode, device, port, {"onSpead": 0, "atType": 1}, dry_run,
+            manual_control=True,
         )
 
         if write_result.get("ai_plus_write_unsupported"):
