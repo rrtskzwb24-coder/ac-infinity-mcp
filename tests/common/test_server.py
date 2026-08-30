@@ -11598,7 +11598,7 @@ async def test_unreadable_devtype_preview_still_works(mock_client):
     }
     data = json.loads(await apply_grow_stage_template("D89XA", 1, "veg", dry_run=True))
     assert "error" not in data
-# ============ Temperature trigger resolution (Quirk 37) ============
+# ============ Temperature trigger resolution (Quirk 39) ============
 #
 # The API stores each temperature trigger twice: devLt/devHt in °C and
 # devLtf/devHtf in °F. Which pair is real depends on the controller. Captured
