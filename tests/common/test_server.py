@@ -80,7 +80,7 @@ from ac_infinity_mcp.server import (
     update_automation_rule,
     vpd_troubleshooting,
 )
-from tests.conftest import MOCK_DEVICE_LEGACY
+from tests.conftest import MOCK_DEVICE_AI_PLUS, MOCK_DEVICE_LEGACY
 from tests.fixtures.advance_automation_fixtures import (
     MOCK_ADVANCE_AUTOMATIONS_LIST,
     MOCK_ADVANCE_AUTOMATIONS_SINGLE,
@@ -11152,12 +11152,14 @@ async def test_get_all_device_readings_summary_unchanged_without_probes(mock_cli
 # (Quirk 37) — so reporting sent=true would be misleading rather than merely
 # incomplete. These tests pin the hold so it cannot be dropped by accident.
 
-_AI_PLUS_DEVICE_FOR_HOLD = {
-    **copy.deepcopy(MOCK_DEVICE_LEGACY),
-    "devCode": "D89XA",
-    "devType": 20,
-    "newFrameworkDevice": True,
-}
+# A real AI+ shape. The first version of this was MOCK_DEVICE_LEGACY with three
+# keys swapped, which kept devName "Test 69 Pro" and legacy firmware — so the
+# device-name assertion below was checking for a 69 Pro in a message whose whole
+# job is telling the grower the controller is an AI+. Port 1 is renamed because
+# the label assertion is about the custom-name path; a named port is a shape the
+# hardware does send, unlike a legacy device claiming newFrameworkDevice.
+_AI_PLUS_DEVICE_FOR_HOLD = copy.deepcopy(MOCK_DEVICE_AI_PLUS)
+_AI_PLUS_DEVICE_FOR_HOLD["deviceInfo"]["ports"][0]["portName"] = "Intake Fan"
 
 
 async def test_apply_grow_stage_template_held_on_ai_plus(mock_client):
@@ -11194,7 +11196,7 @@ async def test_apply_grow_stage_template_hold_error_is_grower_readable(mock_clie
     message = data["error"]
 
     assert "Intake Fan (Port 1)" in message, "must name the port the grower named"
-    assert "Test 69 Pro" in message, "must name the controller"
+    assert "Test 89 AI+" in message, "must name the controller"
     assert "devType" not in message
     assert ">= 20" not in message
     for name in _AI_PLUS_HOLD_TOOL_NAMES:
@@ -11293,9 +11295,20 @@ _AI_PLUS_WRITE_LIVE = {
     "prior_at_type": 2,
 }
 
-# Wording from the refusal these tools used to return. If any of it comes back
-# on an enabled tool, the enablement has regressed.
-_RETIRED_REFUSAL_MARKERS = ("not implemented", "unsupported", "not yet enabled")
+# The first version of this guard listed refusal *vocabulary* — "not implemented",
+# "unsupported", "not yet enabled". None of it matched: the retired string was
+# "AI+ controllers live write path is not yet implemented.", and "not implemented"
+# is not a substring of "not yet implemented". A verbatim copy-paste of the deleted
+# refusal sailed straight through, and so did the current hold wording, so the
+# natural way to reintroduce a refusal was exactly the way that passed.
+#
+# Pin the shape instead. Every hold and refusal path sets tracking_issue, so its
+# absence is the discriminator that does not depend on how anyone words it.
+def _assert_not_a_refusal(data: dict) -> None:
+    assert "error" not in data, f"enabled tool refused: {data.get('error')}"
+    assert "tracking_issue" not in data, (
+        "response carries a tracking_issue — an enabled tool has started refusing"
+    )
 
 
 def _assert_ai_plus_write_landed(data: dict) -> None:
@@ -11305,10 +11318,20 @@ def _assert_ai_plus_write_landed(data: dict) -> None:
     assert data["controller_type"] == "new_framework"
 
 
-def _assert_no_retired_refusal(data: dict) -> None:
-    blob = json.dumps(data).lower()
-    for marker in _RETIRED_REFUSAL_MARKERS:
-        assert marker not in blob, f"retired AI+ refusal wording {marker!r} is back"
+def _assert_wrote(mock_client, **expected) -> None:
+    """Assert the client was called, and with the fields the tool should send.
+
+    Without this the seven tests below shared one canned return describing an ON
+    write at speed 5, and asserted only on that return — so the set_port_off test
+    passed identically whether the tool sent an off payload or an on one.
+    """
+    assert mock_client.set_port_mode.called, "client was never called"
+    updates = mock_client.set_port_mode.call_args[0][2]
+    for key, value in expected.items():
+        assert updates.get(key) == value, (
+            f"expected {key}={value!r} on the wire, got {updates.get(key)!r} "
+            f"(full updates: {updates})"
+        )
 
 
 @pytest.fixture
@@ -11322,43 +11345,107 @@ def ai_plus_write_client(mock_client):
 async def test_set_port_speed_ai_plus_live_write_lands(ai_plus_write_client):
     data = json.loads(await set_port_speed("D89XA", 1, 5, dry_run=False))
     _assert_ai_plus_write_landed(data)
-    _assert_no_retired_refusal(data)
+    _assert_not_a_refusal(data)
     ai_plus_write_client.set_port_mode.assert_called_once()
+    _assert_wrote(ai_plus_write_client, onSpead=5)
 
 
 async def test_set_port_on_ai_plus_live_write_lands(ai_plus_write_client):
     data = json.loads(await set_port_on("D89XA", 1, dry_run=False))
     _assert_ai_plus_write_landed(data)
-    _assert_no_retired_refusal(data)
+    _assert_not_a_refusal(data)
+    _assert_wrote(ai_plus_write_client, atType=2, onSpead=10)
 
 
 async def test_set_port_off_ai_plus_live_write_lands(ai_plus_write_client):
     data = json.loads(await set_port_off("D89XA", 1, dry_run=False))
     _assert_ai_plus_write_landed(data)
-    _assert_no_retired_refusal(data)
+    _assert_not_a_refusal(data)
+    # The whole point: this must fail if set_port_off ever sends an ON payload.
+    _assert_wrote(ai_plus_write_client, atType=1, onSpead=0)
 
 
 async def test_set_port_mode_ai_plus_live_write_lands(ai_plus_write_client):
     data = json.loads(await set_port_mode("D89XA", 1, "off", dry_run=False))
     _assert_ai_plus_write_landed(data)
-    _assert_no_retired_refusal(data)
+    _assert_not_a_refusal(data)
+    _assert_wrote(ai_plus_write_client, atType=1)
 
 
 async def test_set_vpd_automation_ai_plus_live_write_lands(ai_plus_write_client):
     data = json.loads(await set_vpd_automation("D89XA", 1, 1.4, dry_run=False))
     _assert_ai_plus_write_landed(data)
-    _assert_no_retired_refusal(data)
+    _assert_not_a_refusal(data)
+    _assert_wrote(ai_plus_write_client, atType=8, targetVpd=14)
 
 
 async def test_set_temperature_automation_ai_plus_live_write_lands(ai_plus_write_client):
+    # Degrees F: this fixture is a real AI+ shape and reports a F preference, so
+    # the 20-28 that the old legacy-derived fixture accepted is out of range here.
     data = json.loads(
-        await set_temperature_automation("D89XA", 1, 20, 28, dry_run=False)
+        await set_temperature_automation("D89XA", 1, 68, 82, dry_run=False)
     )
     _assert_ai_plus_write_landed(data)
-    _assert_no_retired_refusal(data)
+    _assert_not_a_refusal(data)
+    _assert_wrote(ai_plus_write_client, atType=3, activeHt=1)
 
 
 async def test_set_humidity_automation_ai_plus_live_write_lands(ai_plus_write_client):
     data = json.loads(await set_humidity_automation("D89XA", 1, 50, 70, dry_run=False))
     _assert_ai_plus_write_landed(data)
-    _assert_no_retired_refusal(data)
+    _assert_not_a_refusal(data)
+    _assert_wrote(ai_plus_write_client, atType=3, devLh=50, devHh=70)
+
+
+# ============================================================================
+# Item 1, extended: the empty-port cause must reach the grower on BOTH 999999
+# branches. Rewording the exception was not enough — every caller routes
+# ACInfinityAdvanceConflictError to _build_advance_conflict_response, which
+# builds its own response and discards the exception message. Before this, a
+# grower with an unplugged port was told to break out of, or disable, an
+# automation that need not exist.
+# ============================================================================
+
+def _device_with_empty_port(port: int = 7) -> dict:
+    """A device whose port reports the open-circuit sentinel (Quirk 38 / Quirk 27)."""
+    d = copy.deepcopy(MOCK_DEVICE_LEGACY)
+    d["deviceInfo"]["ports"] = [
+        {"port": port, "portName": f"Port {port}", "speak": 0, "portsLoad": 0,
+         "loadState": 0, "curMode": 1, "remainTime": 0, "portResistance": 65535},
+    ]
+    return d
+
+
+async def test_empty_port_999999_names_the_cable_not_an_automation(mock_client):
+    """set_port_speed on an empty port must lead with the empty port, not automations."""
+    mock_client.get_devices.return_value = [_device_with_empty_port(7)]
+    mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError(
+        "Port 7 on device 12345 rejected the write (code 999999)."
+    )
+    data = json.loads(await set_port_speed("C58ZA", 7, 5, dry_run=False))
+
+    assert data.get("likely_cause") == "EMPTY_PORT"
+    blob = json.dumps(data).lower()
+    assert "plugged" in blob or "connected" in blob
+    # The wrong instructions must not be the offered actions.
+    assert "1_break_out" not in data
+    assert "2_disable_automation" not in data
+
+
+async def test_empty_port_conflict_does_not_call_the_automation_api(mock_client):
+    """The empty-port branch returns before the secondary lookup."""
+    mock_client.get_devices.return_value = [_device_with_empty_port(7)]
+    mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError("999999")
+    await set_port_speed("C58ZA", 7, 5, dry_run=False)
+    mock_client.get_advance_automations.assert_not_called()
+
+
+async def test_populated_port_conflict_still_offers_automation_options(mock_client):
+    """A port with real resistance keeps the original ADVANCE conflict UX."""
+    mock_client.get_devices.return_value = [copy.deepcopy(MOCK_DEVICE_LEGACY)]
+    mock_client.get_advance_automations.return_value = MOCK_ADVANCE_AUTOMATIONS_LIST
+    mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError("999999")
+    data = json.loads(await set_port_speed("C58ZA", 1, 5, dry_run=False))
+
+    assert data.get("likely_cause") != "EMPTY_PORT"
+    assert data["conflict"] == "ADVANCE_AUTOMATION"

@@ -14,6 +14,7 @@ import unicodedata
 from ac_infinity_mcp.analytics import _ZERO_LOAD_DEV_TYPES
 from ac_infinity_mcp.client import ACInfinityClient
 from ac_infinity_mcp.controller import ControllerType, groups_mode_name
+from ac_infinity_mcp.ports import _is_port_empty
 from ac_infinity_mcp.schema import _AUTH_ERROR_MSG, ACInfinityAuthError
 
 logger = logging.getLogger(__name__)
@@ -466,6 +467,42 @@ async def _build_advance_conflict_response(
             When not None, adds a ``"0_update_speed"`` option in the normal path.
             Pass ``None`` from set_port_on / set_port_off (no speed option applies).
     """
+    # An empty port is the far more common cause of the 999999 that routes here
+    # (Quirk 38, 12 for 12 on live hardware). Rewording the exception message was
+    # not enough: every caller routes ACInfinityAdvanceConflictError to this
+    # function, which builds its own response and discards that message. So a
+    # grower with nothing plugged into the port was being told to break out of,
+    # or disable, an automation that may not exist.
+    #
+    # This returns before the automation options rather than appending to them,
+    # because offering "release this port from its automation" as the primary
+    # action for an unplugged port is the wrong instruction, not merely an
+    # incomplete one. The automation possibility is still named.
+    port_display_early = (
+        f"{port_name} (Port {port})" if port_name != f"Port {port}" else port_name
+    )
+    ports = (device or {}).get("deviceInfo", {}).get("ports", [])
+    port_data = next((p for p in ports if p.get("port") == port), None)
+    if _is_port_empty(port_data, port, device):
+        return json.dumps({
+            "conflict": "ADVANCE_AUTOMATION",
+            "likely_cause": "EMPTY_PORT",
+            "device_id": device_id,
+            "port": port,
+            "human_summary": (
+                f"The controller rejected that write, and {port_display_early} doesn't "
+                "appear to have anything connected to it — that's the usual reason. "
+                "Check the cable first. If something is plugged in, then the port is "
+                "under Advance Automation control and needs releasing before it will "
+                "take a manual change."
+            ),
+            "suggested_reply": (
+                f"That didn't go through. {port_display_early} looks empty — is anything "
+                "plugged into it? If it is connected, tell me and I'll check whether "
+                "an automation has hold of the port."
+            ),
+        })
+
     api_call_failed = False
     automations: list[dict] = []
     active_automations: list[dict] = []
@@ -497,6 +534,7 @@ async def _build_advance_conflict_response(
     has_active = any(a.get("enabled") or a.get("run_state") for a in automations)
 
     port_display = f"{port_name} (Port {port})" if port_name != f"Port {port}" else port_name
+
 
     if governing is not None:
         # SUB-PATH A — an enabled/running automation whose bitmask covers this port

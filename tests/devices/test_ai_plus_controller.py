@@ -182,13 +182,17 @@ LEGACY_EXPECTED_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
 }
 
-# Every AI+ test below overrides modeType to 0. The fixture ships modeType=15,
-# which is what a real AI+ port reports whenever its atType is OFF, ON or AUTO
-# (Quirk 36 — modeType echoes atType) — but leaning on the
-# fixture's incidental isOpenAutomation=0 to slip past the ADVANCE guard would
-# make these tests fail for reasons unrelated to what they assert if that field
-# ever changed. Mirrors the override in tests/common/test_client.py.
-AI_PLUS_SETTINGS = {**MOCK_MODE_SETTINGS_AI_PLUS_PORT1, "modeType": 0}
+# The real capture, unmodified. An earlier version overrode modeType 15 -> 0 while
+# leaving atType 2, which is a combination Quirk 36 says the hardware cannot
+# produce — atType 2 (ON) reads back modeType 15. The override was also inert:
+# the AI+ branch of the ADVANCE guard ignores modeType entirely and keys on
+# isOpenAutomation. A fixture that cannot occur cannot discriminate, so it goes.
+AI_PLUS_SETTINGS = dict(MOCK_MODE_SETTINGS_AI_PLUS_PORT1)
+
+# Legacy tests DO need the override: on that branch the guard is
+# modeType == 15 AND isOpenAutomation != 0, so the captured 15 would trip it for
+# a reason unrelated to what those tests assert.
+LEGACY_SETTINGS_FROM_AI_PLUS_CAPTURE = {**MOCK_MODE_SETTINGS_AI_PLUS_PORT1, "modeType": 0}
 
 
 class _Resp:
@@ -364,7 +368,7 @@ def test_ai_plus_only_toggle_values_do_not_block_on_legacy(load_type):
     c = ACInfinityClient("test@example.com", "pw")
     c.token = "tok"
     legacy_device = {"devId": "12345", "devCode": "C58ZA", "devType": 11}
-    settings = {**MOCK_MODE_SETTINGS_AI_PLUS_PORT1, "modeType": 0, "loadType": load_type}
+    settings = {**LEGACY_SETTINGS_FROM_AI_PLUS_CAPTURE, "loadType": load_type}
 
     with (
         patch.object(c.session, "post", lambda *a, **k: _Resp()),
@@ -384,7 +388,7 @@ def test_legacy_historical_toggle_values_still_block(ai_plus_device):
     c.token = "tok"
     legacy_device = {"devId": "12345", "devCode": "C58ZA", "devType": 11}
     for load_type in sorted(TOGGLE_LOAD_TYPES):
-        settings = {**MOCK_MODE_SETTINGS_AI_PLUS_PORT1, "modeType": 0, "loadType": load_type}
+        settings = {**LEGACY_SETTINGS_FROM_AI_PLUS_CAPTURE, "loadType": load_type}
         with (
             patch.object(c.session, "post") as post,
             patch.object(c, "_enforce_write_rate_limit"),
