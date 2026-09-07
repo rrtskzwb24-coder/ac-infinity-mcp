@@ -12,6 +12,8 @@ import logging
 from enum import Enum
 from typing import Any
 
+from ac_infinity_mcp.schema import ACInfinityDeviceError
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,27 +28,57 @@ def detect_controller_type(device_data: dict[str, Any]) -> ControllerType:
     Legacy: devType in {11, 18} or newFrameworkDevice == False
     New framework: devType >= 20 or newFrameworkDevice == True
 
-    Total by construction: never raises, whatever ``devType`` holds. It gates
-    ``_ai_plus_write_held`` in the server layer, and several of those gates sit
-    outside the try/except that wraps their tool body, so a ``TypeError`` here
-    escapes as an unhandled exception rather than a grower-readable error. A
-    numeric string ("20") is coerced and classified normally; anything that
-    cannot be read as a number falls back to LEGACY, which is the same answer an
-    absent devType has always produced via the ``0`` default.
+    A numeric string ("20") is coerced and classified normally. An **absent**
+    devType still resolves to LEGACY via the ``0`` default — long-standing
+    behaviour, and what main's own ``_ctype`` does for a device that is missing
+    entirely. A devType that is *present but unreadable* raises
+    ``ACInfinityDeviceError``.
+
+    Raising rather than guessing is deliberate, and the reason is narrow and
+    specific. This function no longer only picks a payload shape: since #348 it
+    also selects the Groups ``currentMode`` table, and the two tables collide on
+    the wire — LEGACY ``off`` is 2, NEW_FRAMEWORK ``on`` is 2. Guessing LEGACY
+    for an AI+ whose devType did not parse would therefore encode a requested
+    *off* as a 2 that the hardware reads as *on*. That is #326 exactly: the
+    issue whose title is that ``mode="off"`` energized a grow light.
+
+    A wrong guess here energizes equipment; a raise is caught by the server
+    layer's existing handler and reaches the grower as a readable error. The
+    second reason the old ``TypeError`` was unacceptable still holds — it
+    escaped unhandled from gates sitting outside their tool's try/except — but
+    that is fixed by the exception being *typed*, not by returning a value.
+
+    Bools are rejected even though ``bool`` is an ``int`` subclass: ``True``
+    would otherwise coerce to devType 1 and classify LEGACY silently.
+
+    Raises:
+        ACInfinityDeviceError: devType is present but cannot be read as an int.
     """
     if device_data.get("newFrameworkDevice", False):
         return ControllerType.NEW_FRAMEWORK
 
     raw_dev_type = device_data.get("devType", 0)
+    if isinstance(raw_dev_type, bool):
+        raise ACInfinityDeviceError(
+            f"Controller reported devType={raw_dev_type!r}, which is not a device "
+            "type. Refusing to guess the controller class, because guessing wrong "
+            "can invert an on/off write (#326)."
+        )
     try:
         dev_type = int(raw_dev_type)
     except (TypeError, ValueError):
-        logger.warning(
-            "Unreadable devType %r in device data — treating as legacy. If AI+ "
-            "payload handling is not being applied to a new controller, this is "
-            "the reason.", raw_dev_type,
+        logger.error(
+            "Unreadable devType %r — refusing to classify. Guessing here can "
+            "invert an on/off write on AI+ hardware (#326), so this raises "
+            "instead. Every write to this device will fail until devType reads "
+            "as an integer.", raw_dev_type,
         )
-        return ControllerType.LEGACY
+        raise ACInfinityDeviceError(
+            f"Controller reported devType={raw_dev_type!r}, which cannot be read "
+            "as a device type. Refusing to guess the controller class, because "
+            "guessing wrong can invert an on/off write (#326). Re-run discovery; "
+            "if it persists, the device list response has changed shape."
+        ) from None
 
     if dev_type >= 20:
         return ControllerType.NEW_FRAMEWORK

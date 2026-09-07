@@ -2906,6 +2906,30 @@ async def set_port_off(
 # ============ Automation Write Tools ============
 
 
+def _unclassifiable_device_error(device_id: str, port: int, exc: Exception) -> str:
+    """Response for a device whose devType will not parse.
+
+    ``detect_controller_type`` raises rather than guessing, because guessing the
+    controller class wrong can invert an on/off write (#326). Both hold gates sit
+    outside their tool's try/except, so without this the typed error would escape
+    unhandled — the very failure mode the totality fix was meant to close.
+    """
+    return json.dumps({
+        "error": (
+            "I can't tell what kind of controller this is — it reported a device "
+            "type I can't read, and guessing wrong could turn equipment on when "
+            "you asked for off. Nothing was sent. Ask me to re-run discovery; if "
+            "it keeps happening the device list has changed shape and it's worth "
+            "an issue."
+        ),
+        "device_id": device_id,
+        "port": port,
+        "dry_run": False,
+        "sent": False,
+        "detail": str(exc),
+    })
+
+
 def _ai_plus_write_held(device: dict | None) -> bool:
     """True when a tool must refuse a live write because the device is an AI+.
 
@@ -3573,7 +3597,11 @@ async def apply_grow_stage_template(
     # not exist. It also never writes devLtf/devHtf, so on a °F AI+ the °F pair
     # stays stale regardless. Verifying this needs live writes that put real
     # trigger values on a running port; not done, so not claimed.
-    if not dry_run and _ai_plus_write_held(device):
+    try:
+        stage_held = not dry_run and _ai_plus_write_held(device)
+    except ACInfinityDeviceError as e:
+        return _unclassifiable_device_error(device_id, port, e)
+    if stage_held:
         return _ai_plus_held_error(
             "apply_grow_stage_template", device, device_id, port,
             "a one-click stage also stores backup temperature and humidity limits "
@@ -5742,7 +5770,11 @@ async def break_out_of_automation(
         # were never among the AI+ refusal branches, so pre-#308 they returned
         # sent=False silently; enabling AI+ writes makes them real. Multi-port
         # partial-failure handling needs its own fix and its own tests.
-        if not dry_run and _ai_plus_write_held(device):
+        try:
+            breakout_held = not dry_run and _ai_plus_write_held(device)
+        except ACInfinityDeviceError as e:
+            return _unclassifiable_device_error(device_id, port, e)
+        if breakout_held:
             return _ai_plus_held_error(
                 "break_out_of_automation", device, device_id, port,
                 "taking one port out of a shared automation means switching every "

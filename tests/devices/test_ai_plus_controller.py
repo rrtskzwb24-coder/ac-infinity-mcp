@@ -4,10 +4,13 @@ from unittest.mock import patch
 
 import pytest
 
-from ac_infinity_mcp.analytics import _TOGGLE_LOAD_TYPES
 from ac_infinity_mcp.client import ACInfinityClient
 from ac_infinity_mcp.controller import ControllerType, build_write_payload, detect_controller_type
-from ac_infinity_mcp.schema import ACInfinityAdvanceConflictError, ACInfinityDeviceError
+from ac_infinity_mcp.schema import (
+    TOGGLE_LOAD_TYPES,
+    ACInfinityAdvanceConflictError,
+    ACInfinityDeviceError,
+)
 from tests.fixtures.ai_plus_device_fixtures import AI_PLUS_HISTORY_RECORD
 from tests.fixtures.mock_mode_settings_ai_plus import (
     MOCK_MODE_SETTINGS_AI_PLUS_PORT1,
@@ -43,14 +46,30 @@ def test_detect_controller_type_numeric_string_devtype():
     assert detect_controller_type({"devType": "11"}) == ControllerType.LEGACY
 
 
-def test_detect_controller_type_none_devtype_does_not_raise():
-    """devType: None is LEGACY (the same answer an absent devType gives), never a raise."""
-    assert detect_controller_type({"devType": None}) == ControllerType.LEGACY
+@pytest.mark.parametrize("bad", [None, "", "20.0", "unknown", [], {}, True, False])
+def test_detect_controller_type_unreadable_devtype_raises(bad):
+    """Present-but-unreadable devType raises rather than guessing a class.
+
+    Guessing is what makes this dangerous: since #348 this function also selects
+    the Groups currentMode table, and LEGACY off == 2 == NEW_FRAMEWORK on. A
+    wrong guess turns a requested off into an on (#326). "20.0" is the case that
+    motivates the rule — int("20.0") raises, so a plausibly-correct value would
+    otherwise misclassify as quietly as obvious garbage does. Bools are in the
+    list because bool subclasses int, so True would coerce to devType 1.
+    """
+    with pytest.raises(ACInfinityDeviceError):
+        detect_controller_type({"devType": bad})
 
 
-def test_detect_controller_type_unparseable_devtype_does_not_raise():
-    assert detect_controller_type({"devType": "unknown"}) == ControllerType.LEGACY
-    assert detect_controller_type({"devType": []}) == ControllerType.LEGACY
+def test_detect_controller_type_absent_devtype_is_still_legacy():
+    """Absent is not the same as unreadable — it keeps its long-standing default."""
+    assert detect_controller_type({}) == ControllerType.LEGACY
+
+
+def test_detect_controller_type_real_float_devtype_classifies():
+    """A genuine float is readable, so it classifies rather than raising."""
+    assert detect_controller_type({"devType": 20.0}) == ControllerType.NEW_FRAMEWORK
+    assert detect_controller_type({"devType": 11.0}) == ControllerType.LEGACY
 
 
 def test_detect_controller_type_flag_wins_over_unreadable_devtype():
@@ -306,9 +325,9 @@ def test_ai_plus_automation_write_is_not_refused(ai_plus_device):
 # ============ Toggle-hardware guard ============
 
 
-@pytest.mark.parametrize("load_type", sorted(_TOGGLE_LOAD_TYPES))
+@pytest.mark.parametrize("load_type", sorted(TOGGLE_LOAD_TYPES))
 def test_speed_write_refused_on_toggle_hardware(ai_plus_device, load_type):
-    """Every value in _TOGGLE_LOAD_TYPES must block a speed write before the POST.
+    """Every value in TOGGLE_LOAD_TYPES must block a speed write before the POST.
 
     129 and 132 are both live on a devType-22 controller (clone lights, rack
     lights, heat pads). Before they were in the set, a speed write to one of them
