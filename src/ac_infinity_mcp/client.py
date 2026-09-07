@@ -1239,13 +1239,16 @@ class ACInfinityClient:
         # Absent isOpenAutomation defaults to 1 (assume active) in both branches — safe-fail.
         mode_type = current_settings.get("modeType")
         if controller_type == ControllerType.NEW_FRAMEWORK:
-            # Quirk 36: on AI+, modeType echoes the port's atType (SCHEDULE -> 0,
-            # CYCLE -> 1, OFF/ON/AUTO -> 15, agreeing across devType 20 and 22). It
-            # carries mode state, not an ADVANCE signal, so requiring modeType == 15
-            # here would gate the guard on an unrelated field — and because live AI+
-            # controllers report isOpenAutomation = 0 on every port, the combined
-            # legacy condition could never fire at all. isOpenAutomation alone is
-            # authoritative here.
+            # Quirk 36: on AI+, modeType == 15 is observed in three ordinary
+            # non-automation modes (OFF, ON, AUTO), so it cannot mean ADVANCE here.
+            # Sharper still: atType 15 IS ADVANCE, so an ADVANCE port and an OFF port
+            # are indistinguishable by modeType — both read 15. Requiring
+            # modeType == 15 would therefore gate the guard on a field that cannot
+            # make the distinction, and because live AI+ controllers report
+            # isOpenAutomation = 0 on every port, the combined legacy condition could
+            # never fire at all. isOpenAutomation alone is authoritative here.
+            # The mapping is observed and many-to-one, not derived; TIMER, VPD and
+            # ADVANCE were never observed with a modeType alongside.
             open_automation = current_settings.get("isOpenAutomation")
             if open_automation is None:
                 # Safe-fail: absent means "assume active". Logged because the failure

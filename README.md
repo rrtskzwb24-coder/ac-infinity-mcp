@@ -36,7 +36,8 @@
 | UIS Controller 89 AI+ | ✅ | ✅ † | New AI+ protocol — writes require the `minversion` header (Quirk 14) |
 
 † Per-port writes (on/off, speed, mode, temperature/humidity/VPD automation) all work.
-Creating or editing multi-port **Advance Automations** does not yet (#290), and
+*Creating* a multi-port **Advance Automation** does not yet (#290) — reading, enabling,
+disabling and editing existing rules all do — and
 `apply_grow_stage_template` / `break_out_of_automation` are held back pending hardware
 verification (#316) — both refuse with an explanation instead of writing. See
 [AI+ controllers](docs/GUIDE.md#ai-controllers).

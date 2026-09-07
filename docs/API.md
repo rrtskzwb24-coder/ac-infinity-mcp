@@ -487,14 +487,25 @@ devId=REDACTED_DEV_ID&port=1&appId=REDACTED_TOKEN
 **Critical:** Strip `modeSetid` (Quirk 11). Set `modeType=2` when `onSpead > 0` (Quirk 12).
 Enforce 1.5s minimum between calls (Quirk 15).
 
-> **`modeType=2` on AI+.** Quirk 12 is applied on both controller types, but on AI+
-> `modeType` is not a free slot — it echoes the port's `atType` (Quirk 36), so forcing
-> it to `2` alongside a nonzero speed overwrites a field that carries real state.
-> The rule is kept for AI+ because it is what makes a speed write take effect, and
-> because the write is a live-mode override rather than a whole-record replace (Quirk
-> 14) — the port's stored VPD target, humidity range and schedule window survive it.
-> Do not read `modeType == 2` back from an AI+ as "the port is in ON mode"; read
-> `atType`.
+> **`modeType=2` on AI+ is inert — corrected.** An earlier version of this caveat
+> said forcing `modeType=2` "overwrites a field that carries real state," while also
+> saying not to read `modeType` back as the mode. Those cannot both be true, and the
+> measurement settles it in the other direction.
+>
+> `build_write_payload` forces `modeType=2` whenever `onSpead > 0`, so every write in
+> the Quirk 37 run carried it. That port held `onSpead: 6` and `atType: 3`, and
+> `modeType` read back **`15`** on all three reads — before the write, after it, and
+> after restore. The controller did not store the `2`.
+>
+> So on AI+ the force **changes nothing**: `modeType` is server-side derived, and a
+> value sent for it is discarded. Quirk 12 is kept for AI+ because it costs nothing
+> and legacy needs it — not because it makes the write take effect. And the read-back
+> advice stands for the ordinary reason: `modeType` is many-to-one over `atType`
+> (Quirk 36), so read `atType`.
+>
+> **Scope.** This is the devType-20 AUTO-port run (`atType: 3`). The OFF-port run
+> below did not capture `modeType` after its write, so "inert" is measured on one
+> port in one mode. One read-back on an OFF port would close that.
 
 **Headers:** **Not** the same as `getdevModeSettingList` on AI+ controllers. A read
 carries the stock okhttp set for every controller type; a write to a `devType >= 20`
@@ -812,11 +823,22 @@ on one controller and one account:
 | Firmware | **12.8.26** (re-confirmed after an in-place update from 12.8.15; the header behaviour and the `"3.5"` literal were unchanged by it) |
 | Ports exercised | **Port 6 only** for the header ablation — every row of both tables above is one port on one device. Port 8 carried a separate live write test; ports 1–8 were read |
 | Accounts | **1** |
+| Port state | The ablated port was **idle at `atType = 1` (OFF)** for every row. Quirk 37 establishes that this API branches on port mode, so "does the gate behave the same on a port in AUTO or VPD" is an open question, not a settled one |
+| Endpoints | **`addDevMode` only.** Reads were never ablated — they work without `minversion` and were not tested with it. The v2 Groups automation endpoints are separately unverified here; see #290 |
 | `devType` 22 | **not verified** — no devType-22 hardware was available for the header ablation. Quirk 36's mode mapping agrees across 20 and 22, which is weak evidence the write gate is shared, but it is not a measurement of it |
 
 In the spirit of Quirk 33: this is a single-account, single-device result on a
 server-side gate that AC Infinity can change without notice, and did change for
-the v2 endpoints. Treat "AI+ writes need `minversion`" as the strongest available
+the v2 endpoints. > **If AI+ writes start failing en masse, re-run the ablation — do not bump the
+> number.** Subset coverage measures the gate as it is today; it cannot detect the
+> gate changing. What detects that is already in place: the exact-value test pins
+> `"3.5"`, and the `100001` handler names this quirk as the cause. A wave of
+> `100001` therefore means AC Infinity moved the gate, and the response is to
+> re-measure which header (or which value) it now wants. `"3.5"` is an opaque
+> constant, not a version to increment — see the value table above, where `3.6`
+> fails exactly as `3.4` does.
+
+Treat "AI+ writes need `minversion`" as the strongest available
 reading of the evidence, not as a specification.
 
 Detection:
@@ -828,16 +850,31 @@ is_ai_plus = ct == ControllerType.NEW_FRAMEWORK  # devType >= 20 or newFramework
 
 ---
 
-### Quirk 36 — On AI+, `modeType` echoes the port's `atType`; it is not an ADVANCE signal
+### Quirk 36 — On AI+, `modeType` cannot mean ADVANCE: it reads `15` in three ordinary non-automation modes
 
 On legacy controllers `modeType == 15` means the port is under Advance Automation
 control, and `client.py` uses it as a pre-write guard. **That reading does not
 hold on AI+.**
 
-**`modeType` tracks `atType`.** An earlier version of this quirk said the value
-"alternates with port parity and tracks nothing about automation." That was
-wrong — the parity was an artifact of one controller's port layout, where two
-racks carried the same four device kinds in the same order.
+**The load-bearing observation, stated no more strongly than the data supports:**
+`modeType == 15` appears on AI+ ports in three ordinary modes that are not
+automation — OFF, ON and AUTO. Therefore it cannot mean ADVANCE there, and the
+legacy guard that reads it that way is unsound on AI+. Everything below is
+evidence for that sentence; nothing below needs a causal story to hold.
+
+A sharper form of the same point: `atType = 15` **is** ADVANCE. So on AI+ an
+ADVANCE port and an OFF port are indistinguishable by `modeType` — both read
+`15`. A field that cannot separate "under automation" from "switched off" is not
+usable as an automation flag, whatever its mechanism.
+
+**Two retractions.** The first version of this quirk said `modeType`
+"alternates with port parity and tracks nothing about automation" — the parity
+was an artifact of one controller's port layout, two racks carrying the same four
+device kinds in the same order. The second said `modeType` "echoes" `atType`.
+That also overclaims: "echoes" reads as identity, and the table below refutes
+identity on its first three rows, where `atType` 1, 2 and 3 all map to `15`. The
+mapping is **many-to-one and observed, not derived** — it carries strictly less
+information than `atType`, and no mechanism is claimed for it.
 
 Read across all 8 ports of two live controllers, both with the port's `atType`
 alongside:
@@ -854,9 +891,15 @@ The two controllers **agree on every mode they share**, and neither shows a
 parity pattern: the devType-20 device reads `0` on its single SCHEDULE port and
 `15` on the other seven regardless of position.
 
-So `modeType` is a per-port *mode* echo, not a per-port resting constant and not
-an automation flag. It carries real state — which is precisely why nothing should
-force it (see Quirk 12) and why it must not be read as an ADVANCE signal.
+**Unmeasured — do not infer these rows.** `atType` `4` and `5` (the two TIMER
+modes), `8` (VPD) and `15` (ADVANCE) were never observed with a `modeType`
+alongside on either controller, and two cells above are empty because neither
+controller had a port in that mode during the reads. Any claim about what
+`modeType` reads in VPD or ADVANCE is unsupported by this table.
+
+So `modeType` is not a per-port resting constant and not an automation flag. Its
+observed values vary with mode, which is enough to disqualify the ADVANCE
+reading on AI+ — and no more than that is claimed.
 
 Consequently the guard now branches by controller type:
 
@@ -2864,12 +2907,25 @@ time of the call, the response includes an additional `warning` field:
 The speed is stored in the controller's settings but the port does not activate. Ask Claude
 to switch the port to ON mode to bring it up at the stored speed.
 
-> **This was measured on AI+, not assumed.** The wording was challenged on the grounds
-> that Quirk 37 discards fields irrelevant to the port's mode, and a speed on an OFF port
-> looks exactly like such a field. It is not: `onSpead` was written to a live devType-20
-> port in OFF mode, read back, and had persisted. `onSpead` is a mode-agnostic port
-> property, which is why — and this is what forced the Quirk 37 rewording — Quirk 37 does
-> not reach it. The warning is accurate on AI+ as written.
+> **This was measured on AI+, not assumed — and the confound is answered.** The wording
+> was challenged on the grounds that Quirk 37 discards fields irrelevant to the port's
+> mode, and a speed on an OFF port looks exactly like such a field. `onSpead` was written
+> to a live devType-20 port at `atType: 1` (OFF), read back as `7`, and had persisted.
+>
+> The fair objection to that run is that it was not a bare `onSpead`: `build_write_payload`
+> forces `modeType = 2` when `onSpead > 0`, so the payload also carried something that
+> looks like a declaration of ON, and the result could not distinguish "`onSpead` is
+> mode-agnostic" from "`onSpead` arrived alongside an ON declaration."
+>
+> That is resolved by the `modeType` read-back recorded at Quirk 12 above: on AI+ the
+> forced `2` is **discarded** — the field is server-side derived and reads back `15`. The
+> payload's only ON-ish signal therefore never landed, and `atType` stayed `1` throughout.
+> The speed persisted on a port the controller still considered OFF, which is the claim.
+> `onSpead` is a mode-agnostic port property, which is why Quirk 37 does not reach it —
+> and that within-run control is what forced the Quirk 37 rewording.
+>
+> Residual: the discard is measured on the AUTO-port run, not on this OFF-port run. Both
+> point the same way; one read-back on an OFF port would remove the last inference.
 
 **Empty-port warning:** All 7 write tools (`set_port_on`, `set_port_off`, `set_port_speed`,
 `set_port_mode`, `set_vpd_automation`, `set_temperature_automation`, `set_humidity_automation`)

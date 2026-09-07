@@ -59,10 +59,10 @@ Every write operation — changing a speed, toggling a port, creating an automat
 
 \* Everything you do to a **port** — turn it on or off, set a speed, set a mode, set a
 temperature, humidity or VPD automation — writes normally on AI+. Two things do not, and
-both fail loudly rather than silently: **Advance Automations** (the multi-port programs)
-cannot be created or edited on an AI+ yet, and **one-click grow stages** and **taking a
-port out of a shared automation** are deliberately held back pending hardware
-verification. See [AI+ controllers](#ai-controllers) in Section 7.
+**creating** a new Advance Automation (the multi-port programs) does not go through on an
+AI+ yet — reading, enabling, disabling and editing existing ones all do — and **one-click
+grow stages** and **taking a port out of a shared automation** are deliberately held back
+pending hardware verification. See [AI+ controllers](#ai-controllers) in Section 7.
 
 ### A note on network security
 
@@ -352,10 +352,11 @@ this server handles for you.
 Two things are not there yet. Neither one fails quietly — if you ask for either, you get
 told why:
 
-- **Advance Automations** (the named programs that govern several ports at once) can be
-  read and previewed on an AI+, but creating or editing one does not go through. The cause
-  is understood and the fix is in review (#290); until it lands, set those up in the AC
-  Infinity app and this server will read them back correctly.
+- **Creating a new Advance Automation** (a named program governing several ports) does
+  not go through on an AI+ yet — the request hangs rather than returning an error. The
+  cause is understood and the fix is in review (#290); until it lands, create the program
+  in the AC Infinity app. Everything else about them works here: this server reads them
+  back, enables and disables them, and **editing an existing rule does go through**.
 - **One-click grow stages** and **taking a single port out of a shared automation** are
   held back on purpose (#316). The first would report saving fallback limits that the
   controller quietly discards; the second switches several ports at once and cannot yet
@@ -699,10 +700,10 @@ That is a deliberate hold, not a failure — the two capabilities it covers are 
 [AI+ controllers](#ai-controllers) in Section 7, along with what to do instead. Nothing was
 written to your controller, and previewing the same action still works.
 
-**An Advance Automation won't save on an AI+**
-Creating or editing a multi-port Advance Automation does not go through on AI+ controllers
-yet (#290) — it hangs rather than erroring. Set the program up in the AC Infinity app; this
-server reads it back, enables and disables it correctly.
+**A new Advance Automation won't save on an AI+**
+*Creating* one does not go through on AI+ controllers yet (#290) — the request hangs rather
+than returning an error. Create the program in the AC Infinity app; this server reads it
+back, enables and disables it, and can edit its rules from there.
 
 **HTTP security note**
 The AC Infinity API doesn't use HTTPS. Your credentials and sensor data travel over the network without encryption. Keep your config file private and avoid running on untrusted networks. This is an upstream limitation of the AC Infinity service. If you need to run on a less-trusted network, see DEPLOYMENT.md for HTTPS reverse-proxy options.
