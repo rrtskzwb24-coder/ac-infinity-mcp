@@ -11149,7 +11149,7 @@ async def test_get_all_device_readings_summary_unchanged_without_probes(mock_cli
 # #308 enabled AI+ writes generally but deliberately held two tools back. Both
 # write field combinations whose persistence on AI+ is unproven, and AI+
 # accepts mode-irrelevant fields with code 200 and silently discards them
-# (Quirk 36) — so reporting sent=true would be misleading rather than merely
+# (Quirk 37) — so reporting sent=true would be misleading rather than merely
 # incomplete. These tests pin the hold so it cannot be dropped by accident.
 
 _AI_PLUS_DEVICE_FOR_HOLD = {

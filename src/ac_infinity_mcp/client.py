@@ -14,6 +14,7 @@ from ac_infinity_mcp.controller import (
     groups_mode_code,
 )
 from ac_infinity_mcp.schema import (
+    NEW_FRAMEWORK_TOGGLE_LOAD_TYPES,
     TOGGLE_LOAD_TYPES,
     ACInfinityAdvanceConflictError,
     ACInfinityAPIError,
@@ -1238,7 +1239,7 @@ class ACInfinityClient:
         # Absent isOpenAutomation defaults to 1 (assume active) in both branches — safe-fail.
         mode_type = current_settings.get("modeType")
         if controller_type == ControllerType.NEW_FRAMEWORK:
-            # Quirk 35: on AI+, modeType echoes the port's atType (SCHEDULE -> 0,
+            # Quirk 36: on AI+, modeType echoes the port's atType (SCHEDULE -> 0,
             # CYCLE -> 1, OFF/ON/AUTO -> 15, agreeing across devType 20 and 22). It
             # carries mode state, not an ADVANCE signal, so requiring modeType == 15
             # here would gate the guard on an unrelated field — and because live AI+
@@ -1271,13 +1272,19 @@ class ACInfinityClient:
 
         # Guard: toggle (on/off) hardware rejects speed writes with 999999.
         # Only enforced when require_variable_speed=True (i.e. called from set_port_speed).
-        # TOGGLE_LOAD_TYPES is shared with analytics.py so the two layers cannot drift;
-        # 129 and 132 were added after they were observed on live devType-22 lights and
-        # heat pads. This guard has always run for every controller type — only the set
-        # membership changed — so a legacy 132/129 port now raises here instead of POSTing
-        # and surfacing the 999999 as a misleading ADVANCE conflict.
+        # The set consulted depends on the controller class, for the same reason the
+        # 999999 reroute twenty lines above is scoped to NEW_FRAMEWORK: 129 and 132
+        # were observed only on devType 20/22, and on legacy this field is dependable
+        # enough that widening it would newly refuse a genuinely variable-speed port
+        # on evidence gathered from other hardware. Legacy keeps the historical
+        # {4, 128} and its behaviour here is unchanged by this PR.
+        toggle_types = (
+            NEW_FRAMEWORK_TOGGLE_LOAD_TYPES
+            if controller_type == ControllerType.NEW_FRAMEWORK
+            else TOGGLE_LOAD_TYPES
+        )
         load_type = current_settings.get("loadType", 0)
-        if require_variable_speed and load_type in TOGGLE_LOAD_TYPES:
+        if require_variable_speed and load_type in toggle_types:
             raise ACInfinityDeviceError(
                 f"Port {port} is an on/off device (loadType={load_type}) — "
                 "use set_port_on or set_port_off instead of set_port_speed."
@@ -1293,7 +1300,7 @@ class ACInfinityClient:
             # Deliberately an atType (1=OFF, 2=ON, 3=AUTO, 7=SCHEDULE, 8=VPD), not a
             # modeType — the server layer uses it to warn when a speed was stored on a
             # port left in OFF mode. Named prior_mode_type until #308; renamed because
-            # modeType now carries real per-port state on AI+ (Quirk 35).
+            # modeType now carries real per-port state on AI+ (Quirk 36).
             "prior_at_type": current_settings.get("atType"),
         }
 
@@ -1374,7 +1381,7 @@ class ACInfinityClient:
                 # 999999 correlates strongly with an empty port: no-op writes across
                 # 12 ports on two controllers had every portResistance == 65535 port
                 # return 999999 and every connected port return 200, on a devType-11
-                # controller with zero Advance Automations. Recorded as Quirk 37.
+                # controller with zero Advance Automations. Recorded as Quirk 38.
                 #
                 # We deliberately do NOT branch on portResistance to report that here.
                 # Per #315 the field is a frozen 15800 on devType 22 — so the check
@@ -1417,7 +1424,7 @@ class ACInfinityClient:
                 raise ACInfinityAdvanceConflictError(
                     f"Port {port} on device {dev_id} rejected the write (code 999999). "
                     f"The most common cause is that nothing is plugged into port {port} "
-                    "(Quirk 37) — check that first. If something is connected, the port "
+                    "(Quirk 38) — check that first. If something is connected, the port "
                     "is under Advance Automation control."
                 )
 

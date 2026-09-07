@@ -7,6 +7,7 @@ import pytest
 from ac_infinity_mcp.client import ACInfinityClient
 from ac_infinity_mcp.controller import ControllerType, build_write_payload, detect_controller_type
 from ac_infinity_mcp.schema import (
+    NEW_FRAMEWORK_TOGGLE_LOAD_TYPES,
     TOGGLE_LOAD_TYPES,
     ACInfinityAdvanceConflictError,
     ACInfinityDeviceError,
@@ -183,7 +184,7 @@ LEGACY_EXPECTED_HEADERS = {
 
 # Every AI+ test below overrides modeType to 0. The fixture ships modeType=15,
 # which is what a real AI+ port reports whenever its atType is OFF, ON or AUTO
-# (Quirk 35 — modeType echoes atType) — but leaning on the
+# (Quirk 36 — modeType echoes atType) — but leaning on the
 # fixture's incidental isOpenAutomation=0 to slip past the ADVANCE guard would
 # make these tests fail for reasons unrelated to what they assert if that field
 # ever changed. Mirrors the override in tests/common/test_client.py.
@@ -325,9 +326,9 @@ def test_ai_plus_automation_write_is_not_refused(ai_plus_device):
 # ============ Toggle-hardware guard ============
 
 
-@pytest.mark.parametrize("load_type", sorted(TOGGLE_LOAD_TYPES))
+@pytest.mark.parametrize("load_type", sorted(NEW_FRAMEWORK_TOGGLE_LOAD_TYPES))
 def test_speed_write_refused_on_toggle_hardware(ai_plus_device, load_type):
-    """Every value in TOGGLE_LOAD_TYPES must block a speed write before the POST.
+    """Every new-framework toggle value must block a speed write before the POST.
 
     129 and 132 are both live on a devType-22 controller (clone lights, rack
     lights, heat pads). Before they were in the set, a speed write to one of them
@@ -345,6 +346,54 @@ def test_speed_write_refused_on_toggle_hardware(ai_plus_device, load_type):
             c.set_port_mode(ai_plus_device, port=1, updates={"onSpead": 5},
                             dry_run=False, require_variable_speed=True)
     post.assert_not_called()
+
+
+_AI_PLUS_ONLY_TOGGLE = sorted(NEW_FRAMEWORK_TOGGLE_LOAD_TYPES - TOGGLE_LOAD_TYPES)
+
+
+@pytest.mark.parametrize("load_type", _AI_PLUS_ONLY_TOGGLE)
+def test_ai_plus_only_toggle_values_do_not_block_on_legacy(load_type):
+    """129 and 132 must NOT refuse a legacy speed write.
+
+    They were observed only on devType 20/22. An earlier revision put them in the
+    single shared set, which applied AI+ evidence to legacy hardware — a legacy
+    port genuinely capable of variable speed would have been refused permanently,
+    and that refusal is unfalsifiable from the write path. This pins the scoping:
+    the values that block on AI+ pass straight through on legacy.
+    """
+    c = ACInfinityClient("test@example.com", "pw")
+    c.token = "tok"
+    legacy_device = {"devId": "12345", "devCode": "C58ZA", "devType": 11}
+    settings = {**MOCK_MODE_SETTINGS_AI_PLUS_PORT1, "modeType": 0, "loadType": load_type}
+
+    with (
+        patch.object(c.session, "post", lambda *a, **k: _Resp()),
+        patch.object(c, "_enforce_write_rate_limit"),
+        patch.object(c, "get_mode_settings", autospec=True, return_value=settings),
+    ):
+        result = c.set_port_mode(legacy_device, port=1, updates={"onSpead": 5},
+                                 dry_run=False, require_variable_speed=True)
+
+    assert result["sent"] is True
+    assert result["controller_type"] == "legacy"
+
+
+def test_legacy_historical_toggle_values_still_block(ai_plus_device):
+    """The {4, 128} pair blocks on both classes — this PR did not change legacy there."""
+    c = ACInfinityClient("test@example.com", "pw")
+    c.token = "tok"
+    legacy_device = {"devId": "12345", "devCode": "C58ZA", "devType": 11}
+    for load_type in sorted(TOGGLE_LOAD_TYPES):
+        settings = {**MOCK_MODE_SETTINGS_AI_PLUS_PORT1, "modeType": 0, "loadType": load_type}
+        with (
+            patch.object(c.session, "post") as post,
+            patch.object(c, "_enforce_write_rate_limit"),
+            patch.object(c, "get_mode_settings", autospec=True, return_value=settings),
+        ):
+            with pytest.raises(ACInfinityDeviceError, match="on/off device"):
+                c.set_port_mode(legacy_device, port=1, updates={"onSpead": 5},
+                                dry_run=False, require_variable_speed=True)
+        post.assert_not_called()
 
 
 def test_toggle_guard_does_not_block_on_off_writes(ai_plus_device):
@@ -415,7 +464,7 @@ def test_ai_plus_999999_on_mode_write_still_reports_automation_conflict(ai_plus_
             c.set_port_mode(ai_plus_device, port=1, updates={"atType": 2}, dry_run=False)
 
 
-# ============ AI+ ADVANCE guard (Quirk 35) ============
+# ============ AI+ ADVANCE guard (Quirk 36) ============
 
 
 def test_ai_plus_advance_guard_ignores_mode_type(ai_plus_device):
@@ -465,7 +514,7 @@ def test_legacy_advance_guard_still_requires_mode_type_15(legacy_11_device):
 # The speed-write reroute is scoped to NEW_FRAMEWORK. 999999 correlates strongly
 # with an empty port (12 no-op writes across devType 11 and 20: every
 # portResistance == 65535 port returned 999999, every connected port 200, on a
-# controller with zero Advance Automations - Quirk 37). We deliberately do not
+# controller with zero Advance Automations - Quirk 38). We deliberately do not
 # branch on portResistance to say so: per #315 it is a frozen 15800 on devType 22
 # and 65535 on legacy ports that do have equipment attached.
 

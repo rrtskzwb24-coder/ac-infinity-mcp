@@ -488,7 +488,7 @@ devId=REDACTED_DEV_ID&port=1&appId=REDACTED_TOKEN
 Enforce 1.5s minimum between calls (Quirk 15).
 
 > **`modeType=2` on AI+.** Quirk 12 is applied on both controller types, but on AI+
-> `modeType` is not a free slot — it echoes the port's `atType` (Quirk 35), so forcing
+> `modeType` is not a free slot — it echoes the port's `atType` (Quirk 36), so forcing
 > it to `2` alongside a nonzero speed overwrites a field that carries real state.
 > The rule is kept for AI+ because it is what makes a speed write take effect, and
 > because the write is a live-mode override rather than a whole-record replace (Quirk
@@ -522,7 +522,7 @@ devId=REDACTED_DEV_ID&externalPort=1&onSpead=5&modeType=2&offSpead=0&...
 
 ---
 
-## All 37 Known API Quirks
+## All 38 Known API Quirks
 
 ### Quirk 1 — Auth typo: `appPasswordl`
 
@@ -797,11 +797,11 @@ re-derive it.
 The first correction to that claim attributed the `999999` to a
 disabled-but-unreleased Advance Automation on the port. That was also wrong.
 `999999` on `addDevMode` means **nothing is connected to the port** — see
-Quirk 37.
+Quirk 38.
 
 **`addDevMode` on AI+ is a live-mode override, not a whole-record replace.** A
 port switched to OFF retained its stored VPD target, humidity range and schedule
-window. See Quirk 36 for the important limit on that.
+window. See Quirk 37 for the important limit on that.
 
 **Verified scope — read this before generalising.** Everything above was measured
 on one controller and one account:
@@ -812,7 +812,7 @@ on one controller and one account:
 | Firmware | **12.8.26** (re-confirmed after an in-place update from 12.8.15; the header behaviour and the `"3.5"` literal were unchanged by it) |
 | Ports exercised | **Port 6 only** for the header ablation — every row of both tables above is one port on one device. Port 8 carried a separate live write test; ports 1–8 were read |
 | Accounts | **1** |
-| `devType` 22 | **not verified** — no devType-22 hardware was available for the header ablation. Quirk 35's mode mapping agrees across 20 and 22, which is weak evidence the write gate is shared, but it is not a measurement of it |
+| `devType` 22 | **not verified** — no devType-22 hardware was available for the header ablation. Quirk 36's mode mapping agrees across 20 and 22, which is weak evidence the write gate is shared, but it is not a measurement of it |
 
 In the spirit of Quirk 33: this is a single-account, single-device result on a
 server-side gate that AC Infinity can change without notice, and did change for
@@ -828,7 +828,7 @@ is_ai_plus = ct == ControllerType.NEW_FRAMEWORK  # devType >= 20 or newFramework
 
 ---
 
-### Quirk 35 — On AI+, `modeType` echoes the port's `atType`; it is not an ADVANCE signal
+### Quirk 36 — On AI+, `modeType` echoes the port's `atType`; it is not an ADVANCE signal
 
 On legacy controllers `modeType == 15` means the port is under Advance Automation
 control, and `client.py` uses it as a pre-write guard. **That reading does not
@@ -880,7 +880,7 @@ guard read as protective while being provably inert.
 
 ---
 
-### Quirk 36 — On AI+, `addDevMode` returns `200` for fields it silently discards
+### Quirk 37 — On AI+, `addDevMode` returns `200` for fields it silently discards
 
 **A `200` from `addDevMode` does not mean the fields you sent were stored.** On
 AI+ a field persists only when it is either:
@@ -936,7 +936,7 @@ then switch the mode back. Mode-agnostic fields need no such dance.
 
 ---
 
-### Quirk 37 — `addDevMode` returns `999999` when nothing is plugged into the port
+### Quirk 38 — `addDevMode` returns `999999` when nothing is plugged into the port
 
 `999999` is not primarily an Advance Automation conflict. It is what the
 controller returns when the target port reports an **open circuit** —
@@ -2865,10 +2865,10 @@ The speed is stored in the controller's settings but the port does not activate.
 to switch the port to ON mode to bring it up at the stored speed.
 
 > **This was measured on AI+, not assumed.** The wording was challenged on the grounds
-> that Quirk 36 discards fields irrelevant to the port's mode, and a speed on an OFF port
+> that Quirk 37 discards fields irrelevant to the port's mode, and a speed on an OFF port
 > looks exactly like such a field. It is not: `onSpead` was written to a live devType-20
 > port in OFF mode, read back, and had persisted. `onSpead` is a mode-agnostic port
-> property, which is why — and this is what forced the Quirk 36 rewording — Quirk 36 does
+> property, which is why — and this is what forced the Quirk 37 rewording — Quirk 37 does
 > not reach it. The warning is accurate on AI+ as written.
 
 **Empty-port warning:** All 7 write tools (`set_port_on`, `set_port_off`, `set_port_speed`,
@@ -2883,8 +2883,8 @@ said `dry_run=False` returns an unsupported error; that was true before AI+ writ
 enabled and is no longer.
 
 The two AI+-specific ways this call can still refuse are unrelated to `dry_run`: a port
-under Advance Automation control (`isOpenAutomation != 0`, Quirk 35) and a port with
-nothing plugged into it, which the API reports as `999999` (Quirk 37). Both raise before
+under Advance Automation control (`isOpenAutomation != 0`, Quirk 36) and a port with
+nothing plugged into it, which the API reports as `999999` (Quirk 38). Both raise before
 the POST rather than after it.
 
 ---
@@ -3276,7 +3276,7 @@ version; that was replaced because the second and third writes each carry `atTyp
 > This tool sets `atType=8` (VPD) while also storing temperature and humidity
 > thresholds as a fallback for a later switch to AUTO. On AI+ a field that is not
 > relevant to the port's mode at write time is accepted with code `200` and
-> silently discarded (Quirk 36) — which is precisely what those fallback fields
+> silently discarded (Quirk 37) — which is precisely what those fallback fields
 > are. It also never writes `devLtf`/`devHtf`, so on a °F AI+ the °F pair stays
 > stale. `dry_run=True` works normally.
 >

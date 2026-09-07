@@ -7,8 +7,14 @@ import math
 # in the history API even when physically OFF, and they reject variable-speed
 # writes with code 999999 (see client._set_port_mode_inner).
 #
-# All four values are attested on live hardware:
-#   4, 128  — devType 11 (C58ZA)
+# The two sets are split by where the evidence was gathered, and the split is
+# deliberate: an earlier revision of this PR widened the shared set to all four
+# values, which silently changed get_port_activity_report and Rule D ghost
+# filtering on LEGACY hardware from a PR about an AI+ request header. 129 and
+# 132 have only ever been observed on devType 20/22, so only the new-framework
+# write guard consults them.
+#
+#   4, 128  — devType 11 (C58ZA). Attested on legacy; the historical set.
 #   129     — devType 22 (Q0KT4) ports 2/3/5: clone lights, rack lights, heat pad
 #   132     — devType 22 (Q0KT4) port 1: clone heat pad; devType 20 toggle ports
 #
@@ -17,7 +23,12 @@ import math
 # field Quirk 24 already calls unreliable for devType 18/22. Membership fails
 # safe toward letting a write through; a mask fails toward permanently refusing
 # a genuinely variable-speed port, which is unfalsifiable from the write path.
-TOGGLE_LOAD_TYPES: frozenset[int] = frozenset({4, 128, 129, 132})
+TOGGLE_LOAD_TYPES: frozenset[int] = frozenset({4, 128})
+
+# Write-guard set for NEW_FRAMEWORK only. Not used by analytics: applying
+# AI+-gathered values to legacy history interpretation is exactly the
+# out-of-scope change this split exists to avoid.
+NEW_FRAMEWORK_TOGGLE_LOAD_TYPES: frozenset[int] = TOGGLE_LOAD_TYPES | frozenset({129, 132})
 
 # ============ Custom Exception Classes ============
 

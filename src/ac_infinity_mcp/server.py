@@ -2937,7 +2937,7 @@ def _ai_plus_write_held(device: dict | None) -> bool:
     tools back pending per-tool verification on real hardware — see #316. Both
     write field combinations whose persistence is unproven on AI+, where
     ``addDevMode`` accepts mode-irrelevant fields with code 200 and silently
-    discards them (Quirk 36). Reporting ``sent: true`` for settings the device
+    discards them (Quirk 37). Reporting ``sent: true`` for settings the device
     threw away is worse than refusing.
     """
     return detect_controller_type(device or {}) == ControllerType.NEW_FRAMEWORK
@@ -3591,7 +3591,7 @@ async def apply_grow_stage_template(
     # Held on AI+ (#316). This tool writes temp/humidity thresholds alongside
     # atType=8 specifically so they are stored as a fallback for a later switch to
     # AUTO — but on AI+ a field that is not relevant to the port's mode at write
-    # time is accepted with code 200 and silently discarded (Quirk 36). The whole
+    # time is accepted with code 200 and silently discarded (Quirk 37). The whole
     # point of those fields here is that they are NOT live, so they are exactly
     # what AI+ throws away, and the tool would report a stored fallback that does
     # not exist. It also never writes devLtf/devHtf, so on a °F AI+ the °F pair
