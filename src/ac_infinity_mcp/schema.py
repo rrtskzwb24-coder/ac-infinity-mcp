@@ -53,8 +53,23 @@ class ACInfinityDeviceError(ACInfinityError):
 
 
 class ACInfinityAdvanceConflictError(ACInfinityDeviceError):
-    """Raised when a write targets a port under Advance Automation control (modeType=15)."""
-    pass
+    """Raised when a write targets a port under Advance Automation control.
+
+    ``api_code`` distinguishes the two very different reasons this is raised, which
+    callers cannot otherwise tell apart:
+
+    - ``None`` — a pre-write ``isOpenAutomation`` detection. Quirk 19's authoritative
+      ADVANCE signal, established before any POST. The port really is under a program.
+    - ``999999`` — the API rejected the POST with that code. Quirk 38 shows this most
+      often means nothing is plugged into the port, and the ADVANCE reading is a guess.
+
+    Only the second admits an empty-port explanation. Conflating them told growers with
+    a genuinely automated port to go check a cable.
+    """
+
+    def __init__(self, *args: object, api_code: int | None = None) -> None:
+        super().__init__(*args)
+        self.api_code = api_code
 
 
 class ACInfinityConfigError(ACInfinityError):

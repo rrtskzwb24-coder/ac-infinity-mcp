@@ -51,11 +51,53 @@ def detect_controller_type(device_data: dict[str, Any]) -> ControllerType:
     Bools are rejected even though ``bool`` is an ``int`` subclass: ``True``
     would otherwise coerce to devType 1 and classify LEGACY silently.
 
+    **The read path, stated rather than left implicit.** This function is reached from
+    read tools as well as write tools, and there a wrong class only mislabels a mode
+    string — it energizes nothing. So the argument above justifies a raise on writes and
+    does not, on its own, justify one on reads.
+
+    It is accepted anyway, because the alternative is worse and the cost is smaller than
+    it looks:
+
+    - On ``main`` this same input already fails. ``dev_type >= 20`` against ``None`` or
+      any non-numeric string raises ``TypeError`` — unhandled, from the same call sites.
+      A typed exception the server layer can answer is strictly better than that, so no
+      read path regresses relative to what shipped before.
+    - The telemetry tools do not call this at all, and ``get_port_status`` and
+      ``get_port_settings`` already wrap their call in a degrading ``try``/``except``
+      that logs and still returns the port data. The tools that do lose output —
+      ``list_advance_automations`` and ``get_advance_automation`` — surface a readable
+      ``ACInfinityDeviceError`` rather than crashing.
+    - Returning a guess *only* for reads would mean this function answers differently
+      depending on its caller, which is how a value picked for a harmless purpose ends
+      up encoding a mode integer somewhere else. #326 is that failure exactly.
+
     Raises:
         ACInfinityDeviceError: devType is present but cannot be read as an int.
     """
-    if device_data.get("newFrameworkDevice", False):
-        return ControllerType.NEW_FRAMEWORK
+    # Hardened symmetrically with devType below, and for the same reason. This field
+    # is checked FIRST and devType cannot override it, so bare truthiness made it the
+    # softest way into a wrong controller class: the string "false" is truthy, and
+    # would have classified a legacy controller as new-framework — #326 in the other
+    # direction, silently. This is an API that sends devId as a string (Quirk 7) and
+    # devType as "20", so a string-shaped boolean is a shape it has form for.
+    #
+    # 0 and 1 are accepted because they are unambiguous. Strings are not: rejecting
+    # them is the whole point, since "false" is the dangerous case.
+    raw_flag = device_data.get("newFrameworkDevice", False)
+    if isinstance(raw_flag, bool) or (isinstance(raw_flag, int) and raw_flag in (0, 1)):
+        if raw_flag:
+            return ControllerType.NEW_FRAMEWORK
+    elif raw_flag is not None:
+        logger.error(
+            "Unreadable newFrameworkDevice %r — refusing to classify. Guessing here "
+            "can invert an on/off write on AI+ hardware (#326).", raw_flag,
+        )
+        raise ACInfinityDeviceError(
+            f"Controller reported newFrameworkDevice={raw_flag!r}, which is not a "
+            "boolean. Refusing to guess the controller class, because guessing wrong "
+            "can invert an on/off write (#326)."
+        )
 
     raw_dev_type = device_data.get("devType", 0)
     if isinstance(raw_dev_type, bool):

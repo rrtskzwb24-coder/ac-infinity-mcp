@@ -37,9 +37,16 @@ def test_detect_controller_type_ai_plus_fixture(ai_plus_device):
     assert detect_controller_type(ai_plus_device) == ControllerType.NEW_FRAMEWORK
 
 
-# detect_controller_type is total: it gates _ai_plus_write_held in the server layer,
-# and some of those gates sit outside the try/except wrapping their tool body, so a
-# TypeError here would escape as an unhandled exception instead of a readable error.
+# detect_controller_type is deliberately NOT total: a present-but-unreadable devType
+# raises ACInfinityDeviceError rather than guessing a class. Guessing is what makes it
+# dangerous — the function also selects the Groups currentMode table, where LEGACY off
+# == 2 == NEW_FRAMEWORK on, so a wrong guess turns a requested off into an on (#326).
+# The raise is typed precisely because it must survive the gates: apply_grow_stage_
+# template's sits outside its tool's try/except, and the server layer answers it with
+# a grower-readable refusal instead of letting it escape.
+#
+# (An earlier version of this comment said the function was total and that a TypeError
+# would escape. Neither is true now.)
 
 def test_detect_controller_type_numeric_string_devtype():
     """A stringified devType still classifies — "20" is an AI+, not a legacy fallback."""
@@ -71,6 +78,31 @@ def test_detect_controller_type_real_float_devtype_classifies():
     """A genuine float is readable, so it classifies rather than raising."""
     assert detect_controller_type({"devType": 20.0}) == ControllerType.NEW_FRAMEWORK
     assert detect_controller_type({"devType": 11.0}) == ControllerType.LEGACY
+
+
+@pytest.mark.parametrize("bad_flag", ["false", "true", "0", "1", "", [], {}, 2, -1])
+def test_detect_controller_type_unreadable_newframeworkdevice_raises(bad_flag):
+    """The flag is checked first, so bare truthiness was the softest way in.
+
+    "false" is the case that matters: a non-empty string is truthy, so it would have
+    classified a legacy controller as NEW_FRAMEWORK and selected the wrong Groups
+    table — #326 in the opposite direction, with no raise and no log. This API sends
+    devId as a string (Quirk 7) and devType as "20", so a string-shaped boolean is a
+    shape it has form for.
+    """
+    with pytest.raises(ACInfinityDeviceError):
+        detect_controller_type({"devType": 11, "newFrameworkDevice": bad_flag})
+
+
+@pytest.mark.parametrize("flag,expected", [
+    (True, ControllerType.NEW_FRAMEWORK),
+    (1, ControllerType.NEW_FRAMEWORK),
+    (False, ControllerType.LEGACY),
+    (0, ControllerType.LEGACY),
+])
+def test_detect_controller_type_accepts_unambiguous_flag_values(flag, expected):
+    """Real bools and 0/1 are unambiguous and still classify normally."""
+    assert detect_controller_type({"devType": 11, "newFrameworkDevice": flag}) == expected
 
 
 def test_detect_controller_type_flag_wins_over_unreadable_devtype():

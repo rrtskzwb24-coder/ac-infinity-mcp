@@ -11160,6 +11160,12 @@ async def test_get_all_device_readings_summary_unchanged_without_probes(mock_cli
 # hardware does send, unlike a legacy device claiming newFrameworkDevice.
 _AI_PLUS_DEVICE_FOR_HOLD = copy.deepcopy(MOCK_DEVICE_AI_PLUS)
 _AI_PLUS_DEVICE_FOR_HOLD["deviceInfo"]["ports"][0]["portName"] = "Intake Fan"
+# Set the unit explicitly. MOCK_DEVICE_AI_PLUS carries no `unit` key, so the
+# Fahrenheit behaviour these tests rely on comes from _effective_unit(None)'s
+# default — the test would not say which branch it exercises, and would change
+# meaning silently if that default ever moved.
+# _effective_unit: 1 means Celsius, anything else (including absent) means F.
+_AI_PLUS_DEVICE_FOR_HOLD["deviceInfo"]["unit"] = 0  # 0 = Fahrenheit
 
 
 async def test_apply_grow_stage_template_held_on_ai_plus(mock_client):
@@ -11326,7 +11332,19 @@ def _assert_wrote(mock_client, **expected) -> None:
     passed identically whether the tool sent an off payload or an on one.
     """
     assert mock_client.set_port_mode.called, "client was never called"
-    updates = mock_client.set_port_mode.call_args[0][2]
+    assert mock_client.set_port_mode.call_count == 1, (
+        f"expected exactly one write, got {mock_client.set_port_mode.call_count} — "
+        "call_args reads the LAST call, so extra writes would go unasserted"
+    )
+    # Positional-or-keyword: reading call_args[0][2] blind raises IndexError rather
+    # than failing readably if a caller ever passes updates= by keyword.
+    call = mock_client.set_port_mode.call_args
+    if len(call.args) > 2:
+        updates = call.args[2]
+    elif "updates" in call.kwargs:
+        updates = call.kwargs["updates"]
+    else:
+        raise AssertionError(f"could not find the updates dict in the call: {call}")
     for key, value in expected.items():
         assert updates.get(key) == value, (
             f"expected {key}={value!r} on the wire, got {updates.get(key)!r} "
@@ -11376,7 +11394,15 @@ async def test_set_vpd_automation_ai_plus_live_write_lands(ai_plus_write_client)
     data = json.loads(await set_vpd_automation("D89XA", 1, 1.4, dry_run=False))
     _assert_ai_plus_write_landed(data)
     _assert_not_a_refusal(data)
-    _assert_wrote(ai_plus_write_client, atType=8, targetVpd=14)
+    # atType and targetVpd alone leave the two flags that make VPD actually engage
+    # unasserted.
+    _assert_wrote(
+        ai_plus_write_client,
+        atType=8,
+        vpdSettingMode=1,
+        targetVpd=14,          # 1.4 kPa x10
+        targetVpdSwitch=1,
+    )
 
 
 async def test_set_temperature_automation_ai_plus_live_write_lands(ai_plus_write_client):
@@ -11387,7 +11413,20 @@ async def test_set_temperature_automation_ai_plus_live_write_lands(ai_plus_write
     )
     _assert_ai_plus_write_landed(data)
     _assert_not_a_refusal(data)
-    _assert_wrote(ai_plus_write_client, atType=3, activeHt=1)
+    # atType=3 is shared with the humidity tool and activeHt=1 is a constant, so the
+    # old pair asserted nothing the caller actually asked for: it passed with devLt
+    # and devHt swapped, with activeLt flipped, or with the F pair dropped entirely —
+    # and that F pair is the family this PR documents as a live defect elsewhere.
+    _assert_wrote(
+        ai_plus_write_client,
+        atType=3,
+        devLt=20,              # 68F -> 20C
+        devHt=28,              # 82F -> 28C
+        activeLt=1,
+        activeHt=1,
+        devLtf=68,             # F pair, present only on a F-preference device
+        devHtf=82,
+    )
 
 
 async def test_set_humidity_automation_ai_plus_live_write_lands(ai_plus_write_client):
@@ -11417,10 +11456,10 @@ def _device_with_empty_port(port: int = 7) -> dict:
 
 
 async def test_empty_port_999999_names_the_cable_not_an_automation(mock_client):
-    """set_port_speed on an empty port must lead with the empty port, not automations."""
+    """A 999999 on a port reporting the open-circuit sentinel leads with the cable."""
     mock_client.get_devices.return_value = [_device_with_empty_port(7)]
     mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError(
-        "Port 7 on device 12345 rejected the write (code 999999)."
+        "Port 7 rejected the write (code 999999).", api_code=999999
     )
     data = json.loads(await set_port_speed("C58ZA", 7, 5, dry_run=False))
 
@@ -11435,9 +11474,57 @@ async def test_empty_port_999999_names_the_cable_not_an_automation(mock_client):
 async def test_empty_port_conflict_does_not_call_the_automation_api(mock_client):
     """The empty-port branch returns before the secondary lookup."""
     mock_client.get_devices.return_value = [_device_with_empty_port(7)]
-    mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError("999999")
+    mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError(
+        "999999", api_code=999999
+    )
     await set_port_speed("C58ZA", 7, 5, dry_run=False)
     mock_client.get_advance_automations.assert_not_called()
+
+
+# The regression the first version of this caused: _build_advance_conflict_response
+# serves four raise sites, and only the 999999 one admits an empty-port reading. The
+# other three are positive isOpenAutomation detections made BEFORE any POST, where
+# the port provably IS under a program. These pin that separation.
+
+async def test_isopenautomation_conflict_keeps_options_on_an_empty_looking_port(mock_client):
+    """A pre-write ADVANCE detection must never be answered with "check the cable"."""
+    mock_client.get_devices.return_value = [_device_with_empty_port(7)]
+    mock_client.get_advance_automations.return_value = MOCK_ADVANCE_AUTOMATIONS_LIST
+    # api_code=None — this is the isOpenAutomation path, not the 999999 code.
+    mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError(
+        "Port 7 is under Advance Automation control (isOpenAutomation != 0)."
+    )
+    data = json.loads(await set_port_speed("C58ZA", 7, 5, dry_run=False))
+
+    assert data.get("likely_cause") != "EMPTY_PORT"
+    assert data["conflict"] == "ADVANCE_AUTOMATION"
+    assert "options" in data, "the grower lost every way to resolve a real conflict"
+
+
+async def test_weak_empty_signal_advises_but_keeps_the_automation_options(mock_client):
+    """Default-named zero-load port, no portResistance: advise, do not redirect.
+
+    This is the devType-18 shape. The name/load fallback fires for plenty of ports
+    that do have equipment attached, so it is not strong enough to replace the
+    conflict options — only to sit alongside them.
+    """
+    device = copy.deepcopy(MOCK_DEVICE_LEGACY)
+    device["devType"] = 18
+    device["deviceInfo"]["ports"] = [
+        {"port": 7, "portName": "Port 7", "speak": 0, "portsLoad": 0,
+         "loadState": 0, "curMode": 1, "remainTime": 0},
+    ]
+    mock_client.get_devices.return_value = [device]
+    mock_client.get_advance_automations.return_value = MOCK_ADVANCE_AUTOMATIONS_LIST
+    mock_client.set_port_mode.side_effect = ACInfinityAdvanceConflictError(
+        "999999", api_code=999999
+    )
+    data = json.loads(await set_port_speed("C58ZA", 7, 5, dry_run=False))
+
+    assert data["conflict"] == "ADVANCE_AUTOMATION"
+    assert "options" in data, "weak empty-port signal must not remove the options"
+    assert data.get("likely_cause") == "EMPTY_PORT_POSSIBLE"
+    assert "advisory" in data
 
 
 async def test_populated_port_conflict_still_offers_automation_options(mock_client):
@@ -11449,3 +11536,64 @@ async def test_populated_port_conflict_still_offers_automation_options(mock_clie
 
     assert data.get("likely_cause") != "EMPTY_PORT"
     assert data["conflict"] == "ADVANCE_AUTOMATION"
+
+
+# ============================================================================
+# _unclassifiable_device_error — the one claim in this change that reading cannot
+# verify. Delete the helper and both try blocks and the suite was still green, so
+# "the raise reaches the grower instead of escaping" was asserted nowhere. It fires
+# only on dry_run=False, so the untested code sat entirely on the live-write path.
+#
+# "20.0" is the motivating value: int("20.0") raises, so a plausibly-correct string
+# would misclassify as quietly as obvious garbage. newFrameworkDevice must be falsy
+# or the flag short-circuits before devType is ever parsed.
+# ============================================================================
+
+_UNREADABLE_DEVICE = copy.deepcopy(MOCK_DEVICE_AI_PLUS)
+_UNREADABLE_DEVICE["devType"] = "20.0"
+_UNREADABLE_DEVICE["newFrameworkDevice"] = False
+
+
+async def test_apply_grow_stage_template_unreadable_devtype_is_answered(mock_client):
+    """The gate in the unguarded gap must return, not raise."""
+    mock_client.get_devices.return_value = [_UNREADABLE_DEVICE]
+    result = await apply_grow_stage_template("D89XA", 1, "veg", dry_run=False)
+    data = json.loads(result)
+
+    assert "error" in data
+    assert data["sent"] is False
+    assert "controller" in data["error"].lower()
+    mock_client.set_port_mode.assert_not_called()
+    # The maintainer-facing detail must not reach the grower.
+    assert "devType" not in data["error"]
+    assert "#326" not in data["error"]
+    assert "dry_run" not in data["error"]
+
+
+async def test_break_out_of_automation_unreadable_devtype_is_answered(mock_client):
+    """This gate sits inside an outer try, whose handler would return raw str(e).
+
+    Asserting the grower-readable wording is what pins the inner handler: without it
+    the test still passes via the outer `except ACInfinityDeviceError`, which surfaces
+    the exception text naming devType and an issue number.
+    """
+    mock_client.get_devices.return_value = [_UNREADABLE_DEVICE]
+    result = await break_out_of_automation(
+        "D89XA", 1, dry_run=False, confirm_automation_name="Test Automation"
+    )
+    data = json.loads(result)
+
+    assert data["sent"] is False
+    assert "re-run discovery" in data["error"]
+    assert "devType" not in data["error"]
+    mock_client.set_port_mode.assert_not_called()
+
+
+async def test_unreadable_devtype_preview_still_works(mock_client):
+    """The refusal is live-write only — previews are unaffected."""
+    mock_client.get_devices.return_value = [_UNREADABLE_DEVICE]
+    mock_client.set_port_mode.return_value = {
+        "payload": {}, "dry_run": True, "controller_type": "legacy", "sent": False,
+    }
+    data = json.loads(await apply_grow_stage_template("D89XA", 1, "veg", dry_run=True))
+    assert "error" not in data

@@ -1192,7 +1192,9 @@ class ACInfinityClient:
             updates: Fields to change, e.g. {"onSpead": 5}.
             dry_run: If True (default), build and return the payload without sending.
             require_variable_speed: If True, raise ACInfinityDeviceError when the port's
-                loadType indicates toggle (on/off) hardware — see TOGGLE_LOAD_TYPES.
+                loadType indicates toggle (on/off) hardware. The set consulted depends
+                on the controller class: TOGGLE_LOAD_TYPES {4, 128} on legacy,
+                NEW_FRAMEWORK_TOGGLE_LOAD_TYPES {4, 128, 129, 132} on AI+.
                 Pass True from set_port_speed; leave False for set_port_on/set_port_off.
 
         Returns:
@@ -1235,20 +1237,32 @@ class ACInfinityClient:
 
         current_settings = self.get_mode_settings(dev_id, port)
 
+        # ORDERING CONSTRAINT: controller_type is resolved above, before any code path
+        # here can raise ACInfinityAdvanceConflictError. That ordering is load-bearing —
+        # eight server-layer handlers call _ctype inside their
+        # `except ACInfinityAdvanceConflictError` block, where a raise from
+        # detect_controller_type would escape the tool unhandled. It is unreachable
+        # today only because classification already succeeded before the conflict was
+        # raised. Keep classification ahead of every raise below.
+        #
         # Guard: smart automation mode cannot be overridden via the write API (returns 999999).
         # Absent isOpenAutomation defaults to 1 (assume active) in both branches — safe-fail.
         mode_type = current_settings.get("modeType")
         if controller_type == ControllerType.NEW_FRAMEWORK:
             # Quirk 36: on AI+, modeType == 15 is observed in three ordinary
             # non-automation modes (OFF, ON, AUTO), so it cannot mean ADVANCE here.
-            # Sharper still: atType 15 IS ADVANCE, so an ADVANCE port and an OFF port
-            # are indistinguishable by modeType — both read 15. Requiring
-            # modeType == 15 would therefore gate the guard on a field that cannot
-            # make the distinction, and because live AI+ controllers report
+            # Sharper still, from Quirk 17: an ADVANCE port reads modeType 15 with
+            # atType 1, and the table shows an OFF port (also atType 1) reads
+            # modeType 15 — so the two are indistinguishable on both fields.
+            # (An earlier revision said "atType 15 IS ADVANCE"; that is false, 15 is
+            # never an atType. Retracted in Quirk 36.) Requiring modeType == 15
+            # would therefore gate the guard on a field that cannot make the
+            # distinction, and because live AI+ controllers report
             # isOpenAutomation = 0 on every port, the combined legacy condition could
             # never fire at all. isOpenAutomation alone is authoritative here.
-            # The mapping is observed and many-to-one, not derived; TIMER, VPD and
-            # ADVANCE were never observed with a modeType alongside.
+            # The mapping is observed and many-to-one, not derived; the TIMER
+            # atTypes (4, 5) and VPD (8) were never observed with a modeType
+            # alongside.
             open_automation = current_settings.get("isOpenAutomation")
             if open_automation is None:
                 # Safe-fail: absent means "assume active". Logged because the failure
@@ -1302,8 +1316,11 @@ class ACInfinityClient:
             "sent": False,
             # Deliberately an atType (1=OFF, 2=ON, 3=AUTO, 7=SCHEDULE, 8=VPD), not a
             # modeType — the server layer uses it to warn when a speed was stored on a
-            # port left in OFF mode. Named prior_mode_type until #308; renamed because
-            # modeType now carries real per-port state on AI+ (Quirk 36).
+            # port left in OFF mode. Named prior_mode_type until #308; the rename is
+            # still right because this field has always held an atType and the old name
+            # said otherwise. (The reason first given for it — "modeType now carries
+            # real per-port state" — was a mechanism claim Quirk 36 has since retracted;
+            # the rename never depended on it.)
             "prior_at_type": current_settings.get("atType"),
         }
 
@@ -1413,22 +1430,27 @@ class ACInfinityClient:
                         dev_id, port, load_type,
                     )
                     raise ACInfinityDeviceError(
-                        f"Port {port} on device {dev_id} rejected the speed write "
-                        f"(code 999999). Most often that means nothing is plugged "
-                        f"into port {port} — check the cable before anything else. "
-                        "Otherwise the port is on/off hardware that cannot take a "
-                        "speed (use set_port_on or set_port_off), or it is under "
-                        "Advance Automation control."
+                        f"Port {port} rejected the speed write (code 999999). Most "
+                        f"often that means nothing is plugged into port {port} — "
+                        "check the cable before anything else. Otherwise the port is "
+                        "on/off hardware that cannot take a speed (use set_port_on or "
+                        "set_port_off), or it is under Advance Automation control."
                     )
+                # Mirror the exception's own reading into the log: an operator grepping
+                # for this line was getting the pre-Quirk-38 story ("ADVANCE conflict")
+                # while the grower was being told to check the cable.
                 logger.warning(
-                    "Write returned code 999999 (ADVANCE conflict) for devId=%s port=%s",
+                    "Write returned code 999999 for devId=%s port=%s — most likely an "
+                    "empty port (Quirk 38); ADVANCE conflict only if something is "
+                    "actually connected",
                     dev_id, port,
                 )
                 raise ACInfinityAdvanceConflictError(
-                    f"Port {port} on device {dev_id} rejected the write (code 999999). "
-                    f"The most common cause is that nothing is plugged into port {port} "
-                    "(Quirk 38) — check that first. If something is connected, the port "
-                    "is under Advance Automation control."
+                    f"Port {port} rejected the write (code 999999). The most common "
+                    f"cause is that nothing is plugged into port {port} (Quirk 38) — "
+                    "check that first. If something is connected, the port is under "
+                    "Advance Automation control.",
+                    api_code=999999,
                 )
 
             # AI+ writes are gated on the minversion header (Quirk 14). If AC Infinity

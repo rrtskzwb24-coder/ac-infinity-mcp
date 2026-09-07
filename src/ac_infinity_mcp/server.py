@@ -306,9 +306,15 @@ def _ctype(device: dict | None, context: str = "") -> ControllerType:
     `device` is Optional only for the eight ADVANCE-conflict handlers, which bind it to
     None before their `try` so mypy cannot see the `assert device is not None` inside.
     A genuine None means the device fetch itself failed, so LEGACY is a guess — it is
-    logged, with ``context`` naming the caller, rather than applied silently. Guessing
-    this class in silence is the shape of #326, and these paths render text a grower
-    acts on.
+    logged, with ``context`` naming the caller, rather than applied silently.
+
+    That guess is deliberately NOT the same decision ``detect_controller_type`` now
+    refuses to make, and the two docstrings should not read as arguing past each other.
+    There, a devType is *present and unreadable*: the device answered, the field is
+    malformed, and picking a class would encode a mode integer that can invert an
+    on/off write (#326). Here there is no device at all — nothing to misread, no write
+    to encode, and the alternative to a logged default is failing every one of these
+    handlers on a fetch error. Different inputs, different right answers.
     """
     if device is None:
         # Named so an operator can tell which write this affected — every neighbouring
@@ -2714,12 +2720,13 @@ async def set_port_speed(
     except ACInfinityAPIError as e:
         logger.error("API error in set_port_speed (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "set_port_speed"), device=device, requested_speed=speed
+            controller_type=_ctype(device, "set_port_speed"), device=device, requested_speed=speed,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_speed (device=%s port=%s): %s", device_id, port, e)
@@ -2799,12 +2806,13 @@ async def set_port_on(
     except ACInfinityAPIError as e:
         logger.error("API error in set_port_on (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "set_port_on"), device=device
+            controller_type=_ctype(device, "set_port_on"), device=device,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_on (device=%s port=%s): %s", device_id, port, e)
@@ -2885,12 +2893,13 @@ async def set_port_off(
     except ACInfinityAPIError as e:
         logger.error("API error in set_port_off (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "set_port_off"), device=device
+            controller_type=_ctype(device, "set_port_off"), device=device,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_off (device=%s port=%s): %s", device_id, port, e)
@@ -2910,10 +2919,25 @@ def _unclassifiable_device_error(device_id: str, port: int, exc: Exception) -> s
     """Response for a device whose devType will not parse.
 
     ``detect_controller_type`` raises rather than guessing, because guessing the
-    controller class wrong can invert an on/off write (#326). Both hold gates sit
-    outside their tool's try/except, so without this the typed error would escape
-    unhandled — the very failure mode the totality fix was meant to close.
+    controller class wrong can invert an on/off write (#326).
+
+    The two gates are NOT symmetric, and an earlier version of this docstring
+    said they were. ``apply_grow_stage_template``'s gate genuinely sits in an
+    unguarded gap between two try blocks, so without this helper the typed error
+    escapes unhandled. ``break_out_of_automation``'s gate is already inside its
+    outer ``try``, whose ``except ACInfinityDeviceError`` would return
+    ``{"error": str(e)}``. Its inner handler is kept anyway, deliberately: that
+    fallback surfaces the raw exception text, which names ``devType`` and an
+    issue number, where this helper answers the grower in their own terms.
+
+    ``detail`` deliberately does not carry ``str(exc)``. The exception text is
+    written for a maintainer and contains the malformed ``devType`` value and an
+    issue reference; it is logged at error level in ``detect_controller_type``
+    and does not belong in a grower-visible field.
     """
+    logger.warning(
+        "Refusing a live write to device=%s port=%s: %s", device_id, port, exc,
+    )
     return json.dumps({
         "error": (
             "I can't tell what kind of controller this is — it reported a device "
@@ -2926,7 +2950,7 @@ def _unclassifiable_device_error(device_id: str, port: int, exc: Exception) -> s
         "port": port,
         "dry_run": False,
         "sent": False,
-        "detail": str(exc),
+        "detail": "unreadable devType — see server logs",
     })
 
 
@@ -3066,12 +3090,13 @@ async def set_vpd_automation(
             device_id, port, e,
         )
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "set_vpd_automation"), device=device
+            controller_type=_ctype(device, "set_vpd_automation"), device=device,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning(
@@ -3212,12 +3237,13 @@ async def set_temperature_automation(
             device_id, port, e,
         )
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "set_temperature_automation"), device=device
+            controller_type=_ctype(device, "set_temperature_automation"), device=device,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning(
@@ -3321,12 +3347,13 @@ async def set_humidity_automation(
             device_id, port, e,
         )
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "set_humidity_automation"), device=device
+            controller_type=_ctype(device, "set_humidity_automation"), device=device,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning(
@@ -3483,12 +3510,13 @@ async def set_port_mode(
     except ACInfinityAPIError as e:
         logger.error("API error in set_port_mode (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "set_port_mode"), device=device
+            controller_type=_ctype(device, "set_port_mode"), device=device,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_mode (device=%s port=%s): %s", device_id, port, e)
@@ -3650,12 +3678,13 @@ async def apply_grow_stage_template(
             device_id, port, stage, e,
         )
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
-    except ACInfinityAdvanceConflictError:
+    except ACInfinityAdvanceConflictError as conflict_exc:
         port_name = _get_port_name_from_device(device, port)
         dev_id = device.get("devId") if device else None
         return await _build_advance_conflict_response(
             _client(), device_id, dev_id, port, port_name,
-            controller_type=_ctype(device, "apply_grow_stage_template"), device=device
+            controller_type=_ctype(device, "apply_grow_stage_template"), device=device,
+            conflict_code=getattr(conflict_exc, "api_code", None),
         )
     except ACInfinityDeviceError as e:
         logger.warning(
