@@ -536,7 +536,7 @@ devId=REDACTED_DEV_ID&externalPort=1&onSpead=5&modeType=2&offSpead=0&...
 
 ---
 
-## All 39 Known API Quirks
+## All 40 Known API Quirks
 
 ### Quirk 1 — Auth typo: `appPasswordl`
 
@@ -1161,7 +1161,7 @@ an automation. See the retraction in Quirk 14.
 
 `999999` retains its documented ADVANCE-conflict meaning for ports that report a
 real resistance value; that path is unchanged and still reachable.
-### Quirk 39 — Temperature triggers are stored twice; which copy is real depends on the controller
+### Quirk 40 — Temperature triggers are stored twice; which copy is real depends on the controller
 
 Every port stores its temperature trigger in **two** field pairs:
 
