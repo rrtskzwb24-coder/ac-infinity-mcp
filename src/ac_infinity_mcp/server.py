@@ -2631,18 +2631,47 @@ async def get_port_settings(device_id: str, port: int) -> str:
         # came second.
         _clauses: list[str] = []
         if mode_str == "AUTO":
+            # Each trigger is reported only if ITS OWN enable flag is set. temp_range
+            # and humi_range above are gated per FAMILY (low OR high), so a port with
+            # only its high trigger enabled still carries a stored low value — the
+            # 32°F unset default on AI+, but a real stored number on legacy (a live
+            # devType 11 exhaust holds 50°F with activeLt 0). Stating that as
+            # behaviour is the defect this block already fixes at the mode level,
+            # one level down: a bound the controller is not acting on.
             if temp_range:
+                _lt_on = bool(settings.get("activeLt"))
+                _ht_on = bool(settings.get("activeHt"))
                 _t_min, _t_max = temp_range["min"], temp_range["max"]
-                _clauses.append(
-                    f"Temperature automation: {_t_min}–{_t_max}{_unit_lbl}. "
-                    f"Fan speeds up above {_t_max}{_unit_lbl} and slows below "
-                    f"{_t_min}{_unit_lbl}."
-                )
+                if _lt_on and _ht_on:
+                    _clauses.append(
+                        f"Temperature automation: {_t_min}–{_t_max}{_unit_lbl}. "
+                        f"Fan speeds up above {_t_max}{_unit_lbl} and slows below "
+                        f"{_t_min}{_unit_lbl}."
+                    )
+                elif _ht_on:
+                    _clauses.append(
+                        f"Temperature automation: fan speeds up above {_t_max}{_unit_lbl}."
+                    )
+                elif _lt_on:
+                    _clauses.append(
+                        f"Temperature automation: fan slows below {_t_min}{_unit_lbl}."
+                    )
             if humi_range:
-                _clauses.append(
-                    f"Humidity automation: {humi_range['min_pct']}–"
-                    f"{humi_range['max_pct']}%."
-                )
+                _lh_on = bool(settings.get("activeLh"))
+                _hh_on = bool(settings.get("activeHh"))
+                if _lh_on and _hh_on:
+                    _clauses.append(
+                        f"Humidity automation: {humi_range['min_pct']}–"
+                        f"{humi_range['max_pct']}%."
+                    )
+                elif _hh_on:
+                    _clauses.append(
+                        f"Humidity automation: high trigger at {humi_range['max_pct']}%."
+                    )
+                elif _lh_on:
+                    _clauses.append(
+                        f"Humidity automation: low trigger at {humi_range['min_pct']}%."
+                    )
         elif mode_str == "VPD" and vpd_target is not None:
             _clauses.append(f"VPD automation: target {vpd_target} kPa.")
 

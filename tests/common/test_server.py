@@ -11768,7 +11768,11 @@ async def test_summary_auto_with_stale_vpd_reports_the_governing_family(mock_cli
     s = await _summary(mock_client, _settings(
         atType=3, devLh=48, devHh=100, activeLh=1,
         targetVpd=12, targetVpdSwitch=1, vpdSettingMode=1))
-    assert "Humidity automation: 48–100%." in s
+    # Only the floor is enabled (activeHh defaults to 0). This assertion used to
+    # read "Humidity automation: 48–100%." — which pinned the per-bound bug: 100%
+    # is a stored ceiling the controller is not acting on.
+    assert "Humidity automation: low trigger at 48%." in s
+    assert "100" not in s
     assert "VPD" not in s
 
 
@@ -11792,3 +11796,73 @@ async def test_summary_clean_off_port_says_only_the_mode(mock_client):
     """No stored config: no dangling caveat about settings that do not exist."""
     s = await _summary(mock_client, _settings(atType=1))
     assert s == "Port is in OFF mode."
+
+
+# ---- per-bound trigger flags ----
+#
+# temp_range / humi_range are gated per FAMILY (low OR high). The summary used to
+# describe both bounds whenever either flag was set, so a port with only its high
+# trigger enabled announced a low limit it was not acting on. Live captures:
+#
+#   SPEGQ port 2 (AI+ exhaust):  activeLt 0 devLtf 32 | activeHt 1 devHtf 80
+#                                activeLh 1 devLh 55  | activeHh 0 devHh 55
+#       old summary: "Fan speeds up above 80.0°F and slows below 32.0°F.
+#                     Humidity automation: 55–55%."
+#   JNFZA port 1 (legacy):       activeLt 0 with a REAL stored devLtf 50
+#       — so this is not a 32°F-sentinel special case.
+
+
+async def test_summary_only_high_temp_trigger_active_omits_the_low_bound(mock_client):
+    """SPEGQ port 2: the 32°F low bound is stored but disabled."""
+    s = await _summary(mock_client, _settings(
+        atType=3, devLtf=32, devHtf=80, activeLt=0, activeHt=1))
+    assert "speeds up above 80.0" in s
+    assert "slows below" not in s
+    assert "32.0" not in s
+
+
+async def test_summary_inactive_low_temp_with_a_real_stored_value_is_not_reported(mock_client):
+    """JNFZA port 1: a genuine 50°F sits in devLtf with activeLt 0. Not a sentinel case."""
+    s = await _summary(mock_client, _settings(
+        atType=3, devLt=10, devHt=27, devLtf=50, devHtf=80, activeLt=0, activeHt=1))
+    assert "speeds up above 80.0" in s
+    assert "50.0" not in s
+    assert "slows below" not in s
+
+
+async def test_summary_only_low_temp_trigger_active(mock_client):
+    s = await _summary(mock_client, _settings(
+        atType=3, devLtf=60, devHtf=80, activeLt=1, activeHt=0))
+    assert "slows below 60.0" in s
+    assert "speeds up above" not in s
+
+
+async def test_summary_both_temp_triggers_active_keeps_the_full_range(mock_client):
+    """Regression guard: the two-bound sentence must survive the per-flag split."""
+    s = await _summary(mock_client, _settings(
+        atType=3, devLtf=60, devHtf=80, activeLt=1, activeHt=1))
+    assert "60.0–80.0" in s
+    assert "speeds up above 80.0" in s
+    assert "slows below 60.0" in s
+
+
+async def test_summary_only_low_humidity_active_is_not_a_range(mock_client):
+    """SPEGQ port 2's 55–55% and port 4's 48–100%: one live bound, not a range."""
+    s = await _summary(mock_client, _settings(
+        atType=3, devLh=48, devHh=100, activeLh=1, activeHh=0))
+    assert "low trigger at 48%" in s
+    assert "48–100%" not in s
+    assert "100" not in s
+
+
+async def test_summary_only_high_humidity_active(mock_client):
+    s = await _summary(mock_client, _settings(
+        atType=3, devLh=40, devHh=58, activeLh=0, activeHh=1))
+    assert "high trigger at 58%" in s
+    assert "40" not in s
+
+
+async def test_summary_both_humidity_triggers_active_keeps_the_range(mock_client):
+    s = await _summary(mock_client, _settings(
+        atType=3, devLh=50, devHh=58, activeLh=1, activeHh=1))
+    assert "50–58%" in s
