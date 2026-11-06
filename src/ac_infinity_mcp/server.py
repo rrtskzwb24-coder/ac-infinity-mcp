@@ -11,6 +11,7 @@ import time
 import weakref
 from datetime import UTC, datetime, timedelta
 
+import requests
 from mcp.server.fastmcp import FastMCP
 
 from ac_infinity_mcp.analytics import (
@@ -2208,6 +2209,29 @@ async def get_port_activity_report(device_id: str, days: int = 7) -> str:
 _SCHEDULE_ALWAYS_ACTIVE: int = 255
 
 # curMode (devInfoListAll) and atType (getdevModeSettingList) use the same integer encoding
+# #289: the client never retries a write that timed out, because the server may
+# already have applied it. The tools used to report that as a bare "Unexpected
+# error", which reads as "nothing happened". Say what is actually known.
+_WRITE_TIMEOUT_PORT_DETAIL = (
+    "AC Infinity did not answer in time, so the change may or may not have been "
+    "applied. Wait about 2 minutes, then read the port back with get_port_settings "
+    "before trying again - retrying blindly can apply it twice."
+)
+_WRITE_TIMEOUT_AUTOMATION_DETAIL = (
+    "AC Infinity did not answer in time, so the change may or may not have been "
+    "applied. Wait about 2 minutes, then list the automations with "
+    "list_advance_automations before trying again - retrying blindly can apply it "
+    "twice, and a created automation may already be running."
+)
+
+
+def _write_timeout_response(detail: str) -> str:
+    return json.dumps({
+        "error": "Write timed out",
+        "detail": detail,
+        "may_have_applied": True,
+    })
+
 _MODE_LABELS: dict[int, str] = {
     1: "OFF", 2: "ON", 3: "AUTO",
     4: "TIMER_TO_ON", 5: "TIMER_TO_OFF",
@@ -3022,6 +3046,9 @@ async def set_port_speed(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_speed (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in set_port_speed: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in set_port_speed: %s", e, exc_info=True)
         return json.dumps({
@@ -3108,6 +3135,9 @@ async def set_port_on(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_on (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in set_port_on: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in set_port_on: %s", e, exc_info=True)
         return json.dumps({
@@ -3195,6 +3225,9 @@ async def set_port_off(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_off (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in set_port_off: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in set_port_off: %s", e, exc_info=True)
         return json.dumps({
@@ -3395,6 +3428,9 @@ async def set_vpd_automation(
             device_id, port, e,
         )
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in set_vpd_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in set_vpd_automation: %s", e, exc_info=True)
         return json.dumps({
@@ -3585,6 +3621,9 @@ async def set_temperature_automation(
             device_id, port, e,
         )
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in set_temperature_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in set_temperature_automation: %s", e, exc_info=True)
         return json.dumps({
@@ -3695,6 +3734,9 @@ async def set_humidity_automation(
             device_id, port, e,
         )
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in set_humidity_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in set_humidity_automation: %s", e, exc_info=True)
         return json.dumps({
@@ -3855,6 +3897,9 @@ async def set_port_mode(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in set_port_mode (device=%s port=%s): %s", device_id, port, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in set_port_mode: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in set_port_mode: %s", e, exc_info=True)
         return json.dumps({
@@ -4029,6 +4074,9 @@ async def apply_grow_stage_template(
             device_id, port, stage, e,
         )
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in apply_grow_stage_template: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in apply_grow_stage_template: %s", e, exc_info=True)
         return json.dumps({
@@ -4563,6 +4611,9 @@ async def enable_advance_automation(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in enable_advance_automation (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in enable_advance_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_AUTOMATION_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in enable_advance_automation: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
@@ -4701,6 +4752,9 @@ async def disable_advance_automation(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in disable_advance_automation (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in disable_advance_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_AUTOMATION_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in disable_advance_automation: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
@@ -5052,6 +5106,9 @@ async def create_advance_automation(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in create_advance_automation (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in create_advance_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_AUTOMATION_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in create_advance_automation: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
@@ -5209,6 +5266,9 @@ async def delete_advance_automation(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in delete_advance_automation (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in delete_advance_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_AUTOMATION_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in delete_advance_automation: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
@@ -5530,6 +5590,9 @@ async def add_automation_rule(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in add_automation_rule (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in add_automation_rule: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_AUTOMATION_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in add_automation_rule: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
@@ -5979,6 +6042,9 @@ async def update_automation_rule(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in update_automation_rule (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in update_automation_rule: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_AUTOMATION_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in update_automation_rule: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
@@ -6131,6 +6197,9 @@ async def delete_automation_rule(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in delete_automation_rule (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in delete_automation_rule: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_AUTOMATION_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in delete_automation_rule: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
@@ -6544,6 +6613,9 @@ async def break_out_of_automation(
     except ACInfinityDeviceError as e:
         logger.warning("Device error in break_out_of_automation (%s): %s", device_id, e)
         return json.dumps({"error": str(e)})
+    except requests.exceptions.Timeout as e:
+        logger.error("Write timed out in break_out_of_automation: %s", e)
+        return _write_timeout_response(_WRITE_TIMEOUT_PORT_DETAIL)
     except Exception as e:
         logger.error("Unexpected error in break_out_of_automation: %s", e, exc_info=True)
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
