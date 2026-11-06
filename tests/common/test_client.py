@@ -1640,7 +1640,7 @@ def test_get_historical_data_always_sends_pageNum_1(authed_client):
 
 
 @responses_lib.activate
-def test_get_historical_data_pagination(authed_client):
+def test_get_historical_data_pagination(authed_client, no_sleep):
     base_ts = 1714000000
     page1 = {
         "code": 200,
@@ -1693,7 +1693,7 @@ def test_get_historical_data_pagination(authed_client):
 
 
 @responses_lib.activate
-def test_get_historical_data_pagination_three_plus_chunks(authed_client):
+def test_get_historical_data_pagination_three_plus_chunks(authed_client, no_sleep):
     """#248: multi-day history assembles across MANY chunks via the time cursor (the API
     caps a page at ~96 rows). The mock slices a single canonical dataset by the request's
     'time' cursor, so the result is correct ONLY if the cursor advances correctly — a
