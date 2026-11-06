@@ -4720,6 +4720,58 @@ async def create_advance_automation(
         return json.dumps({"error": "Unexpected error", "detail": "see server logs"})
 
 
+# #327: on a devType 20 controller, deleting an automation left its port in OFF, not
+# the mode it had before (a SCHEDULE light went dark). It did not reproduce on a
+# devType 11 port in ON. The stored window survives, so the port can look configured
+# while it is off. The delete response therefore names each governed port, what the
+# controller reported for it just before the delete, and how to check and restore it.
+_DELETE_PORT_OFF_WARNING = (
+    "Deleting an automation has been observed to leave its port in OFF instead of the "
+    "mode it had before (#327). Changes take about 2 minutes to reach the controller. "
+    "Then check each port below with get_port_settings; if one reads OFF and should "
+    "not, set its mode again with set_port_mode."
+)
+
+
+def _governed_ports(found: dict) -> list[int]:
+    """Ports covered by any port group of a grouped automation (grouptDevType bitmask)."""
+    mask = 0
+    for pg in found.get("port_groups", []):
+        try:
+            mask |= int(pg.get("grp_dev_type") or 0)
+        except (TypeError, ValueError):
+            continue
+    return [bit + 1 for bit in range(8) if mask & (1 << bit)]
+
+
+async def _port_mode_snapshot(dev_id: str, ports: list[int]) -> list[dict]:
+    """What the controller reports for each port right now. Best effort: a failed read
+    yields mode UNKNOWN for that port rather than blocking the delete."""
+    out = []
+    for port in ports:
+        entry: dict = {"port": port, "mode_before_delete": "UNKNOWN"}
+        try:
+            s = await asyncio.to_thread(_client().get_mode_settings, dev_id, port)
+            at = s.get("atType") if isinstance(s, dict) else None
+            mode = _decode_mode(at if isinstance(at, int) else None)
+            entry["mode_before_delete"] = mode
+            if mode == "SCHEDULE":
+                start = _format_schedule_time(s.get("schedStartTime"))
+                end = _format_schedule_time(s.get("schedEndtTime"))
+                if start and end:
+                    entry["schedule"] = f"{start}-{end}"
+                    entry["restore_hint"] = (
+                        f'set_port_mode(mode="SCHEDULE", schedule_start="{start}", '
+                        f'schedule_end="{end}")'
+                    )
+            elif mode in ("ON", "AUTO", "VPD", "OFF"):
+                entry["restore_hint"] = f'set_port_mode(mode="{mode}")'
+        except Exception as e:  # noqa: BLE001 - snapshot must never block the delete
+            logger.warning("Port %s mode snapshot failed before delete: %s", port, e)
+        out.append(entry)
+    return out
+
+
 @mcp_server.tool()
 async def delete_advance_automation(
     device_id: str,
@@ -4763,6 +4815,10 @@ async def delete_advance_automation(
 
         name = found["name"]
         was_enabled = found["enabled"]
+        port_states = await _port_mode_snapshot(str(dev_id), _governed_ports(found))
+        port_fields: dict = (
+            {"ports": port_states, "warning": _DELETE_PORT_OFF_WARNING} if port_states else {}
+        )
 
         if dry_run:
             return json.dumps({
@@ -4772,6 +4828,7 @@ async def delete_advance_automation(
                 "was_enabled": was_enabled,
                 "dry_run": True,
                 "sent": False,
+                **port_fields,
             })
 
         # If enabled, disable first with a single toggle call (Fix 1: the API
@@ -4800,6 +4857,7 @@ async def delete_advance_automation(
             "was_enabled": was_enabled,
             "dry_run": False,
             "sent": True,
+            **port_fields,
         })
 
     except ACInfinityAuthError as e:
