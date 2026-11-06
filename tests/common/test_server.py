@@ -557,6 +557,48 @@ async def test_get_device_reading_human_summary(mock_client):
     assert "Reading from" in summary
 
 
+def _offline_parsed(mock_client):
+    parsed = dict(mock_client.parse_device_data.return_value)
+    parsed.update({
+        "online": False,
+        "offline_since": "2026-10-27T23:20:09Z",
+        "timestamp": "2026-10-27T23:20:09Z",
+    })
+    mock_client.parse_device_data.return_value = parsed
+
+
+async def test_get_device_reading_offline_is_flagged(mock_client):
+    """An offline controller's cached values must not read as live."""
+    _offline_parsed(mock_client)
+    data = json.loads(await get_device_reading("C58ZA"))
+    assert data["online"] is False
+    assert data["data_quality"] == "stale_offline"
+    assert data["offline_since"].startswith("2026-10-27T18:20:09")  # America/Chicago
+    assert data["human_summary"].startswith("Controller is OFFLINE since")
+    assert "not live" in data["warning"]
+
+
+async def test_get_device_reading_online_has_no_offline_fields(mock_client):
+    data = json.loads(await get_device_reading("C58ZA"))
+    assert "warning" not in data
+    assert "data_quality" not in data
+    assert "OFFLINE" not in data["human_summary"]
+
+
+async def test_get_all_device_readings_flags_offline(mock_client):
+    _offline_parsed(mock_client)
+    data = json.loads(await get_all_device_readings())
+    assert data["human_summary"].startswith("OFFLINE:")
+    assert all(r["online"] is False for r in data["readings"])
+
+
+async def test_get_environment_health_offline_warns(mock_client):
+    _offline_parsed(mock_client)
+    data = json.loads(await get_environment_health("C58ZA", "veg"))
+    assert data["data_quality"] == "stale_offline"
+    assert data["human_summary"].startswith("Controller is OFFLINE")
+
+
 async def test_get_device_reading_no_load_field_in_ports(mock_client):
     """Regression guard: 'load' key must be absent from ports in get_device_reading output."""
     mock_client.parse_device_data.return_value = {

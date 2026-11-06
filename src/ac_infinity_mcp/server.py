@@ -1013,6 +1013,27 @@ async def discover_devices() -> str:
         })
 
 
+def _offline_fields(parsed: dict, tz) -> dict:
+    """Extra output fields for a controller the cloud reports as offline.
+
+    Empty for an online device, so online output is unchanged.
+    """
+    if parsed.get("online", True):
+        return {}
+    since = _utc_iso_to_local(parsed.get("offline_since"), tz)
+    when = f" since {since}" if since else ""
+    return {
+        "online": False,
+        "offline_since": since,
+        "data_quality": "stale_offline",
+        "warning": (
+            f"Controller is OFFLINE{when}. These values are the last reading it "
+            "uploaded, not live conditions. The controller keeps running its stored "
+            "program, but it cannot be read or changed until it reconnects to WiFi."
+        ),
+    }
+
+
 @mcp_server.tool()
 async def get_device_reading(device_id: str) -> str:
     """
@@ -1084,6 +1105,7 @@ async def get_device_reading(device_id: str) -> str:
         _sensor_clause = _format_sensor_clause(parsed.get("external_sensors", []))
         _probes = _format_probes(parsed.get("probes", []), unit)
         _probe_clause = _format_probe_clause(_probes)
+        _off = _offline_fields(parsed, tz)
         output = {
             "device_id": device_id,
             "device_name": parsed.get("device_name"),
@@ -1095,8 +1117,10 @@ async def get_device_reading(device_id: str) -> str:
             "ports": parsed.get("ports", []),
             "external_sensors": parsed.get("external_sensors", []),
             "probes": _probes,
+            **_off,
             "human_summary": (
-                f"{_safe_name}: {_temp_val}{_unit_lbl}, {_humid}% RH, VPD {_vpd} kPa. "
+                (f"{_off['warning']} " if _off else "")
+                + f"{_safe_name}: {_temp_val}{_unit_lbl}, {_humid}% RH, VPD {_vpd} kPa. "
                 + (f"{_probe_clause}. " if _probe_clause else "")
                 + (f"{_sensor_clause}. " if _sensor_clause else "")
                 + f"Reading from {_ts}."
@@ -1485,6 +1509,7 @@ async def get_all_device_readings() -> str:
                     "ports": parsed.get("ports", []),
                     "external_sensors": parsed.get("external_sensors", []),
                     "probes": _format_probes(parsed.get("probes", []), unit),
+                    **_offline_fields(parsed, tz),
                 })
             except Exception as e:
                 readings.append({
@@ -1494,6 +1519,7 @@ async def get_all_device_readings() -> str:
                 })
 
         _ok = [r for r in readings if "error" not in r]
+        _offline = [r for r in _ok if r.get("online") is False]
         if len(_ok) >= 3:
             _rows = "\n".join(
                 f"| {_sanitize_api_string(r.get('device_name'), 64) or 'Unknown'} "
@@ -1518,6 +1544,16 @@ async def get_all_device_readings() -> str:
             _all_summary = ". ".join(_all_parts) + "."
         else:
             _all_summary = "No readings available."
+        if _offline:
+            _names = ", ".join(
+                (_sanitize_api_string(r.get("device_name"), 64) or "Unknown")
+                + (f" (since {r['offline_since']})" if r.get("offline_since") else "")
+                for r in _offline
+            )
+            _all_summary = (
+                f"OFFLINE: {_names} - values shown are the last upload, not live. "
+                + _all_summary
+            )
 
         return json.dumps({"readings": readings, "human_summary": _all_summary}, indent=2)
 
@@ -1569,8 +1605,11 @@ async def get_environment_health(device_id: str, stage: str = "veg") -> str:
         result = dataclasses.asdict(health)
         result["device_id"] = device_id
         result["stage"] = stage
+        _off = _offline_fields(parsed, _effective_tz(parsed.get("zone_id")))
+        result.update(_off)
         result["human_summary"] = (
-            f"Temperature {health.temperature_f:.1f}°F ({health.temperature_c:.1f}°C), "
+            (f"{_off['warning']} " if _off else "")
+            + f"Temperature {health.temperature_f:.1f}°F ({health.temperature_c:.1f}°C), "
             f"humidity {health.humidity_pct:.0f}%, VPD {health.vpd_kpa:.2f} kPa. "
             f"Overall health: {health.grade} ({health.score}/100)."
         )

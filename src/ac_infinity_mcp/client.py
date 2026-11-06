@@ -1996,8 +1996,27 @@ class ACInfinityClient:
                     if _should_include_sensor(s)
                 ]
 
+            # An offline controller still comes back from devInfoListAll, carrying the
+            # last values it uploaded. Stamping those with "now" presents a days-old
+            # reading as live. Absent "online" means unknown and is treated as online,
+            # so fixtures and firmware that omit the field behave as before.
+            raw_online = device_data.get("online")
+            online = raw_online is None or bool(raw_online)
+            offline_since = None
+            if not online:
+                off_ts = device_data.get("devOfftime")
+                if isinstance(off_ts, (int, float)) and off_ts > 0:
+                    offline_since = (
+                        datetime.fromtimestamp(off_ts, UTC).replace(tzinfo=None).isoformat()
+                        + "Z"
+                    )
+            now_iso = datetime.now(UTC).replace(tzinfo=None).isoformat() + "Z"
+
             return {
-                "timestamp": datetime.now(UTC).replace(tzinfo=None).isoformat() + "Z",
+                # Offline: the reading is no newer than when the device dropped off.
+                "timestamp": offline_since if offline_since else now_iso,
+                "online": online,
+                "offline_since": offline_since,
                 "device_id": device_data.get("devCode"),
                 "device_name": device_data.get("devName", "Unknown"),
                 "temperature_c": round(temp_c, 1),
