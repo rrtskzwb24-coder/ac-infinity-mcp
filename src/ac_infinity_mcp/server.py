@@ -1156,6 +1156,57 @@ async def get_device_reading(device_id: str) -> str:
         })
 
 
+# A controller uploads a record about once a minute. A longer silence means it was
+# offline or unpowered, and the span is missing from the averages, not part of them.
+_HISTORY_GAP_THRESHOLD_S = 15 * 60
+_HISTORY_GAPS_LISTED = 20
+
+
+def _find_history_gaps(
+    raw_records: list[dict], start_ts: int, end_ts: int, now_ts: int,
+) -> list[tuple[int, int]]:
+    """Spans longer than _HISTORY_GAP_THRESHOLD_S with no record, inside the request.
+
+    Includes the leading span (range start to first record) and the trailing span
+    (last record to the range end, capped at now so a range ending later today is
+    not reported as a gap).
+    """
+    times = sorted(
+        r["createTime"] for r in raw_records
+        if isinstance(r.get("createTime"), (int, float))
+    )
+    if not times:
+        return []
+    edge_end = min(end_ts, now_ts)
+    points = [start_ts, *times, edge_end]
+    return [
+        (int(a), int(b))
+        for a, b in zip(points, points[1:])
+        if b - a > _HISTORY_GAP_THRESHOLD_S
+    ]
+
+
+def _format_history_gaps(gaps: list[tuple[int, int]], tz) -> tuple[list[dict], str]:
+    """Output rows (longest first, capped) and a one-line warning."""
+    def _local(ts: int) -> str:
+        return datetime.fromtimestamp(ts, UTC).astimezone(tz).strftime("%Y-%m-%dT%H:%M %Z")
+
+    ranked = sorted(gaps, key=lambda g: g[1] - g[0], reverse=True)
+    rows = [
+        {"from": _local(a), "to": _local(b), "hours": round((b - a) / 3600, 1)}
+        for a, b in ranked[:_HISTORY_GAPS_LISTED]
+    ]
+    total_h = sum(b - a for a, b in gaps) / 3600
+    longest = rows[0]
+    warning = (
+        f"{len(gaps)} gap(s) with no data, {total_h:.1f} h in total; longest "
+        f"{longest['hours']} h from {longest['from']} to {longest['to']}. The controller "
+        "was likely offline or unpowered. Those spans are missing from the readings "
+        "and statistics, not averaged into them."
+    )
+    return rows, warning
+
+
 @mcp_server.tool()
 async def get_historical_readings(
     device_id: str,
@@ -1262,11 +1313,15 @@ async def get_historical_readings(
             if port_num is not None:
                 port_names[port_num] = p.get("portName", f"Port {port_num}")
 
+        gaps: list[tuple[int, int]] = []
         if dev_id_numeric:
             raw_records = await asyncio.to_thread(
                 _client().get_historical_data, dev_id_numeric, start_ts, end_ts
             )
             if raw_records:
+                gaps = _find_history_gaps(
+                    raw_records, start_ts, end_ts, int(_utcnow().timestamp())
+                )
                 readings = [
                     _client().parse_history_record(r, port_names=port_names)
                     for r in raw_records
@@ -1407,6 +1462,10 @@ async def get_historical_readings(
         if dropped_readings:
             response["dropped_readings"] = dropped_readings
             response["drop_reason"] = "malformed timestamp"
+        if gaps:
+            response["data_gaps"], response["data_gap_warning"] = _format_history_gaps(
+                gaps, tz
+            )
         return json.dumps(response, indent=2)
 
     except ACInfinityAuthError as e:

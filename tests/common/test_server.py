@@ -883,6 +883,42 @@ async def test_history_tools_name_the_rate_limit(mock_client, tool, args):
     assert "server logs" not in data["detail"]
 
 
+def test_find_history_gaps_middle_leading_trailing():
+    from ac_infinity_mcp.server import _find_history_gaps
+
+    start, end, now = 0, 100_000, 50_000
+    recs = [{"createTime": s} for s in (60, 120, 180, 10_000, 10_060)]
+    gaps = _find_history_gaps(recs, start, end, now)
+    # middle silence 180 -> 10000, trailing 10060 -> now (capped, not end)
+    assert gaps == [(180, 10_000), (10_060, 50_000)]
+
+
+def test_find_history_gaps_none_when_dense():
+    from ac_infinity_mcp.server import _find_history_gaps
+
+    recs = [{"createTime": 60 * i} for i in range(100)]
+    assert _find_history_gaps(recs, 0, 60 * 99, 10**9) == []
+
+
+async def test_get_historical_readings_reports_gap(mock_client, monkeypatch):
+    """A controller that was offline for days must not look like continuous data."""
+    import ac_infinity_mcp.server as srv
+
+    base = 1714000000  # 2024-04-24T23:06:40Z
+    times = [base + 60 * i for i in range(5)] + [base + 3 * 86400 + 60 * i for i in range(5)]
+    mock_client.get_historical_data.return_value = [{"createTime": s} for s in times]
+    mock_client.parse_history_record.side_effect = lambda r, port_names=None: {
+        "timestamp": srv.datetime.fromtimestamp(r["createTime"], srv.UTC)
+        .replace(tzinfo=None).isoformat() + "Z",
+        "temperature_c": 24.0, "temperature_f": 75.2, "humidity": 55.0, "vpd": 1.5,
+        "ports": [],
+    }
+    monkeypatch.setattr(srv, "_utcnow", lambda: srv.datetime.fromtimestamp(times[-1], srv.UTC))
+    data = json.loads(await get_historical_readings("C58ZA", "2024-04-24", "2024-04-30", "raw"))
+    assert data["data_gaps"][0]["hours"] == pytest.approx(72 - 4 / 60, abs=0.1)
+    assert "missing from the readings" in data["data_gap_warning"]
+
+
 async def test_get_historical_readings_invalid_date_format(mock_client):
     result = await get_historical_readings("C58ZA", "not-a-date", "2024-04-25")
     data = json.loads(result)
