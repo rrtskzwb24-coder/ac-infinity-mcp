@@ -2805,6 +2805,58 @@ async def test_set_port_speed_live(mock_client):
     assert "payload" not in data
 
 
+_WRITE_TOOLS_289 = (
+    "set_port_mode", "set_port_speed", "set_port_on", "set_port_off",
+    "set_vpd_automation", "set_temperature_automation", "set_humidity_automation",
+    "apply_grow_stage_template", "break_out_of_automation",
+    "create_advance_automation", "enable_advance_automation", "disable_advance_automation",
+    "delete_advance_automation", "add_automation_rule", "update_automation_rule",
+    "delete_automation_rule",
+)
+
+
+@pytest.mark.parametrize("tool", _WRITE_TOOLS_289)
+def test_every_write_tool_handles_timeout_289(tool):
+    """#289: each write tool catches a write timeout before the generic handler."""
+    import inspect
+
+    from ac_infinity_mcp import server as srv
+
+    fn = getattr(srv, tool)
+    src = inspect.getsource(getattr(fn, "fn", fn))
+    assert "except requests.exceptions.Timeout" in src
+    # the outer handler is the last "except Exception"; inner ones may come earlier
+    assert src.index("except requests.exceptions.Timeout") < src.rindex("except Exception")
+
+
+async def test_set_port_speed_timeout_says_may_have_applied_289(mock_client):
+    import requests
+
+    from ac_infinity_mcp.server import set_port_speed
+
+    mock_client.set_port_mode.side_effect = requests.exceptions.ReadTimeout("read timed out")
+    data = json.loads(await set_port_speed("C58ZA", 1, 5, dry_run=False))
+    assert data["error"] == "Write timed out"
+    assert data["may_have_applied"] is True
+    assert "get_port_settings" in data["detail"]
+
+
+async def test_enable_automation_timeout_says_list_first_289(mock_client):
+    import copy
+
+    import requests
+
+    automations = copy.deepcopy(MOCK_ADVANCE_AUTOMATIONS_LIST)
+    for e in automations:
+        if e["advId"] == 999001:
+            e["isOn"] = 0
+    mock_client.get_advance_automations.return_value = automations
+    mock_client.enable_advance_automation.side_effect = requests.exceptions.ReadTimeout("x")
+    data = json.loads(await enable_advance_automation("C58ZA", "999001", dry_run=False))
+    assert data["error"] == "Write timed out"
+    assert "list_advance_automations" in data["detail"]
+
+
 async def test_set_port_speed_device_not_found(mock_client):
     result = await set_port_speed("INVALID", 1, 5)
     data = json.loads(result)
