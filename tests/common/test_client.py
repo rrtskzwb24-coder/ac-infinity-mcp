@@ -191,6 +191,38 @@ def test_parse_device_data_divide_by_100(client):
     assert result["vpd"] == 1.24
 
 
+def test_parse_device_data_online_default(client):
+    """No "online" field means unknown: treated as online, timestamp is now."""
+    result = client.parse_device_data(MOCK_DEVICE)
+    assert result["online"] is True
+    assert result["offline_since"] is None
+
+
+def test_parse_device_data_offline_uses_devofftime(client):
+    """online 0 (the real API sends an int): the reading is dated when it went offline."""
+    dev = {**MOCK_DEVICE, "online": 0, "devOfftime": 1793143209}
+    result = client.parse_device_data(dev)
+    assert result["online"] is False
+    assert result["offline_since"] == "2026-10-27T23:20:09Z"
+    assert result["timestamp"] == result["offline_since"]
+
+
+def test_parse_device_data_offline_without_offtime(client):
+    """Offline with no usable devOfftime: still flagged, timestamp falls back to now."""
+    dev = {**MOCK_DEVICE, "online": False, "devOfftime": 0}
+    result = client.parse_device_data(dev)
+    assert result["online"] is False
+    assert result["offline_since"] is None
+    assert result["timestamp"].endswith("Z")
+
+
+def test_parse_device_data_online_int(client):
+    dev = {**MOCK_DEVICE, "online": 1, "devOfftime": 1793143209}
+    result = client.parse_device_data(dev)
+    assert result["online"] is True
+    assert result["offline_since"] is None
+
+
 def test_parse_device_data_device_id(client):
     result = client.parse_device_data(MOCK_DEVICE)
     assert result["device_id"] == "C58ZA"
