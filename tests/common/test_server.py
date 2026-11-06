@@ -6542,6 +6542,45 @@ async def test_delete_advance_automation_dry_run(mock_client):
     mock_client.delete_advance_automation.assert_not_called()
 
 
+async def test_delete_advance_automation_reports_port_modes_327(mock_client):
+    """#327: the response names each governed port and its mode before the delete."""
+    mock_client.get_advance_automations.return_value = MOCK_ADVANCE_AUTOMATIONS_LIST
+    mock_client.get_mode_settings.return_value = {
+        "atType": 7, "schedStartTime": 360, "schedEndtTime": 0,
+    }
+    data = json.loads(await delete_advance_automation("C58ZA", "999001", dry_run=False))
+    assert data["sent"] is True
+    assert data["ports"] == [{
+        "port": 3,  # grouptDevType 4
+        "mode_before_delete": "SCHEDULE",
+        "schedule": "06:00-00:00",
+        "restore_hint": 'set_port_mode(mode="SCHEDULE", schedule_start="06:00", '
+                        'schedule_end="00:00")',
+    }]
+    assert "#327" in data["warning"]
+    mock_client.get_mode_settings.assert_called_once()
+    assert mock_client.get_mode_settings.call_args[0][1] == 3
+
+
+async def test_delete_advance_automation_dry_run_also_warns_327(mock_client):
+    mock_client.get_advance_automations.return_value = MOCK_ADVANCE_AUTOMATIONS_LIST
+    mock_client.get_mode_settings.return_value = {"atType": 2}
+    data = json.loads(await delete_advance_automation("C58ZA", "999001", dry_run=True))
+    assert data["ports"][0]["mode_before_delete"] == "ON"
+    assert "warning" in data
+    mock_client.delete_advance_automation.assert_not_called()
+
+
+async def test_delete_advance_automation_snapshot_failure_does_not_block(mock_client):
+    """A failed mode read must not stop the delete; the port is reported UNKNOWN."""
+    mock_client.get_advance_automations.return_value = MOCK_ADVANCE_AUTOMATIONS_LIST
+    mock_client.get_mode_settings.side_effect = ACInfinityAPIError("boom")
+    data = json.loads(await delete_advance_automation("C58ZA", "999001", dry_run=False))
+    assert data["sent"] is True
+    assert data["ports"] == [{"port": 3, "mode_before_delete": "UNKNOWN"}]
+    mock_client.delete_advance_automation.assert_called_once()
+
+
 async def test_delete_advance_automation_not_found(mock_client):
     mock_client.get_advance_automations.return_value = MOCK_ADVANCE_AUTOMATIONS_LIST
     result = await delete_advance_automation("C58ZA", "7777777", dry_run=True)
