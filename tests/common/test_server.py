@@ -4686,8 +4686,8 @@ async def test_set_temperature_automation_payload_encoding(mock_client):
 # on an exhaust fan, "turn on below 32 °F", inert in September and live in
 # January.
 
-_F_DEVICE = copy.deepcopy(MOCK_DEVICE_LEGACY)
-_F_DEVICE["deviceInfo"]["unit"] = 0  # 0 = Fahrenheit
+_F_DEVICE_LEGACY = copy.deepcopy(MOCK_DEVICE_LEGACY)
+_F_DEVICE_LEGACY["deviceInfo"]["unit"] = 0  # 0 = Fahrenheit
 
 
 async def test_set_temperature_automation_low_rail_disables_low_trigger_c(mock_client):
@@ -4716,7 +4716,7 @@ async def test_set_temperature_automation_above_rail_enables_low_trigger_c(mock_
 
 async def test_set_temperature_automation_low_rail_disables_low_trigger_f(mock_client):
     """32 °F is the same rail as 0 °C — one check covers both unit paths."""
-    mock_client.get_devices.return_value = [copy.deepcopy(_F_DEVICE)]
+    mock_client.get_devices.return_value = [copy.deepcopy(_F_DEVICE_LEGACY)]
     mock_client.set_port_mode.return_value = MOCK_TEMP_DRY
     await set_temperature_automation("C58ZA", 1, 32.0, 80.0)
     updates = mock_client.set_port_mode.call_args[0][2]
@@ -4727,7 +4727,7 @@ async def test_set_temperature_automation_low_rail_disables_low_trigger_f(mock_c
 
 
 async def test_set_temperature_automation_above_rail_enables_low_trigger_f(mock_client):
-    mock_client.get_devices.return_value = [copy.deepcopy(_F_DEVICE)]
+    mock_client.get_devices.return_value = [copy.deepcopy(_F_DEVICE_LEGACY)]
     mock_client.set_port_mode.return_value = MOCK_TEMP_DRY
     await set_temperature_automation("C58ZA", 1, 60.0, 80.0)
     updates = mock_client.set_port_mode.call_args[0][2]
@@ -4741,7 +4741,7 @@ async def test_set_temperature_automation_repairs_a_stuck_flag(mock_client):
     describes: the flag is written explicitly, so read-before-write cannot carry
     the stale 1 through.
     """
-    stuck = copy.deepcopy(_F_DEVICE)
+    stuck = copy.deepcopy(_F_DEVICE_LEGACY)
     stuck["deviceInfo"]["ports"][0]["activeLt"] = 1
     mock_client.get_devices.return_value = [stuck]
     mock_client.set_port_mode.return_value = MOCK_TEMP_DRY
