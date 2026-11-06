@@ -822,6 +822,25 @@ async def test_get_historical_readings_success(mock_client):
     assert "statistics" in data
 
 
+@pytest.mark.parametrize("tool,args", [
+    ("get_historical_readings", ("C58ZA", "2024-04-25", "2024-04-25")),
+    ("detect_environment_trends", ("C58ZA",)),
+    ("get_port_activity_report", ("C58ZA",)),
+])
+async def test_history_tools_name_the_rate_limit(mock_client, tool, args):
+    """#362: a 999998 that outlasted the backoff is named, not 'see server logs'."""
+    from ac_infinity_mcp import server as srv
+    from ac_infinity_mcp.schema import ACInfinityRateLimitError
+
+    mock_client.get_historical_data.side_effect = ACInfinityRateLimitError(
+        "History API error 999998: Rate Limiting!"
+    )
+    data = json.loads(await getattr(srv, tool)(*args))
+    assert data["error"] == "AC Infinity API error"
+    assert "999998" in data["detail"]
+    assert "server logs" not in data["detail"]
+
+
 async def test_get_historical_readings_invalid_date_format(mock_client):
     result = await get_historical_readings("C58ZA", "not-a-date", "2024-04-25")
     data = json.loads(result)

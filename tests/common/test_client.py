@@ -14,6 +14,7 @@ from ac_infinity_mcp.schema import (
     ACInfinityAPIError,
     ACInfinityAuthError,
     ACInfinityDeviceError,
+    ACInfinityRateLimitError,
 )
 from tests.fixtures.advance_automation_fixtures import MOCK_ADVANCE_AUTOMATIONS_LIST
 from tests.fixtures.mock_api_responses import (
@@ -2645,3 +2646,117 @@ def test_parse_device_data_all_string_typed_probe_group(client):
     assert result["temperature_f"] == pytest.approx(79.5)
     assert len(result["probes"]) == 1
     assert result["probes"][0]["sensor_port"] == 2
+
+
+# ============ Historical data - 999998 rate limiting (#362, Quirk 41) ============
+
+_RATE_LIMITED = {"code": 999998, "msg": "Rate Limiting!", "data": None}
+
+
+def _history_page(start, n):
+    return {
+        "code": 200,
+        "data": {"rows": [{"createTime": start + i, "temperature": 2400} for i in range(n)]},
+    }
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """Record history sleeps instead of waiting them out."""
+    slept = []
+    monkeypatch.setattr("ac_infinity_mcp.client.time.sleep", slept.append)
+    return slept
+
+
+@responses_lib.activate
+def test_history_rate_limit_is_retried_after_backoff(authed_client, no_sleep):
+    """A 999998 page is retried after the first backoff, and the call succeeds."""
+    responses_lib.add(responses_lib.POST, HISTORY_URL, json=_RATE_LIMITED, status=200)
+    responses_lib.add(
+        responses_lib.POST, HISTORY_URL, json=_history_page(1714000000, 2), status=200,
+    )
+    rows = authed_client.get_historical_data("12345", 1714000000, 1714086400)
+    assert len(rows) == 2
+    assert len(responses_lib.calls) == 2
+    assert ACInfinityClient.HISTORY_RATE_LIMIT_BACKOFF_S[0] in no_sleep
+
+
+@responses_lib.activate
+def test_history_rate_limit_raises_typed_error_after_backoffs(authed_client, no_sleep):
+    """Still rejected after every backoff: a typed, still-catchable error."""
+    for _ in range(len(ACInfinityClient.HISTORY_RATE_LIMIT_BACKOFF_S) + 1):
+        responses_lib.add(responses_lib.POST, HISTORY_URL, json=_RATE_LIMITED, status=200)
+    with pytest.raises(ACInfinityRateLimitError) as exc:
+        authed_client.get_historical_data("12345", 1714000000, 1714086400)
+    assert isinstance(exc.value, ACInfinityAPIError)
+    assert exc.value.api_code == 999998
+    assert len(responses_lib.calls) == len(ACInfinityClient.HISTORY_RATE_LIMIT_BACKOFF_S) + 1
+    for delay in ACInfinityClient.HISTORY_RATE_LIMIT_BACKOFF_S:
+        assert delay in no_sleep
+
+
+@responses_lib.activate
+def test_history_pages_are_paced(authed_client, monkeypatch):
+    """The second page waits out HISTORY_MIN_INTERVAL_S after the first."""
+    clock = [1000.0]
+    slept = []
+
+    def fake_sleep(s):
+        slept.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr("ac_infinity_mcp.client.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("ac_infinity_mcp.client.time.sleep", fake_sleep)
+    responses_lib.add(
+        responses_lib.POST, HISTORY_URL, json=_history_page(1714000000, 3), status=200,
+    )
+    responses_lib.add(
+        responses_lib.POST, HISTORY_URL, json=_history_page(1714000100, 1), status=200,
+    )
+    rows = authed_client.get_historical_data("12345", 1714000000, 1714086400, page_size=3)
+    assert len(rows) == 4
+    assert slept == [ACInfinityClient.HISTORY_MIN_INTERVAL_S]
+
+
+@responses_lib.activate
+def test_history_pages_after_a_rejection_keep_the_gap_that_worked(authed_client, monkeypatch):
+    """After a 999998, later pages in the same call are spaced at least the backoff."""
+    clock = [1000.0]
+    slept = []
+
+    def fake_sleep(s):
+        slept.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr("ac_infinity_mcp.client.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("ac_infinity_mcp.client.time.sleep", fake_sleep)
+    responses_lib.add(
+        responses_lib.POST, HISTORY_URL, json=_history_page(1714000000, 3), status=200,
+    )
+    responses_lib.add(responses_lib.POST, HISTORY_URL, json=_RATE_LIMITED, status=200)
+    responses_lib.add(
+        responses_lib.POST, HISTORY_URL, json=_history_page(1714000100, 3), status=200,
+    )
+    responses_lib.add(
+        responses_lib.POST, HISTORY_URL, json=_history_page(1714000200, 1), status=200,
+    )
+    rows = authed_client.get_historical_data("12345", 1714000000, 1714086400, page_size=3)
+    assert len(rows) == 7
+    first = ACInfinityClient.HISTORY_RATE_LIMIT_BACKOFF_S[0]
+    # page 2 paced 2 s, rejected, backoff 15 s, retried; page 3 paced up to 15 s
+    assert slept[0] == ACInfinityClient.HISTORY_MIN_INTERVAL_S
+    assert slept[1] == first
+    assert sum(slept[2:]) >= first - 0.001
+
+
+@responses_lib.activate
+def test_history_other_api_errors_are_not_retried(authed_client, no_sleep):
+    """Only 999998 backs off; any other non-200 code fails at once, as before."""
+    responses_lib.add(
+        responses_lib.POST, HISTORY_URL, json={"code": 500, "msg": "x"}, status=200,
+    )
+    with pytest.raises(ACInfinityAPIError) as exc:
+        authed_client.get_historical_data("12345", 1714000000, 1714086400)
+    assert not isinstance(exc.value, ACInfinityRateLimitError)
+    assert len(responses_lib.calls) == 1
+

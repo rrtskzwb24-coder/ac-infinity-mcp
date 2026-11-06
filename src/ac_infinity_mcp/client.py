@@ -16,11 +16,13 @@ from ac_infinity_mcp.controller import (
 from ac_infinity_mcp.schema import (
     NEW_FRAMEWORK_TOGGLE_LOAD_TYPES,
     PORT_EMPTY_RESISTANCE,
+    RATE_LIMIT_API_CODE,
     TOGGLE_LOAD_TYPES,
     ACInfinityAdvanceConflictError,
     ACInfinityAPIError,
     ACInfinityAuthError,
     ACInfinityDeviceError,
+    ACInfinityRateLimitError,
 )
 
 logger = logging.getLogger(__name__)
@@ -751,6 +753,10 @@ class ACInfinityClient:
         self.session = requests.Session()
         self._last_write_time: float = 0.0
         self._write_lock = threading.Lock()
+        # History pacing (#362). Shared across calls so two tool calls in a row,
+        # or one call per device, are spaced the same as pages within one call.
+        self._last_history_time: float = 0.0
+        self._history_lock = threading.Lock()
         self._auth_lock = threading.Lock()
         self._auth_error: ACInfinityAuthError | None = None
         # devId -> ControllerType, upserted by get_devices() and never cleared.
@@ -1002,6 +1008,20 @@ class ACInfinityClient:
         logger.info("Fetched %d devices", len(devices))
         return devices
 
+    # History pacing (#362, Quirk 41). Back-to-back pages were rejected with
+    # 999998; pages 25 s apart always succeeded. The threshold in between is not
+    # measured, so pace lightly and back off hard when the cloud says so.
+    HISTORY_MIN_INTERVAL_S: float = 2.0
+    HISTORY_RATE_LIMIT_BACKOFF_S: tuple[float, ...] = (15.0, 30.0, 60.0)
+
+    def _pace_history_request(self, interval: float) -> None:
+        """Hold until ``interval`` seconds have passed since the last history POST."""
+        with self._history_lock:
+            elapsed = time.monotonic() - self._last_history_time
+            if elapsed < interval:
+                time.sleep(interval - elapsed)
+            self._last_history_time = time.monotonic()
+
     def get_historical_data(
         self,
         dev_id: str,
@@ -1050,6 +1070,8 @@ class ACInfinityClient:
         Raises:
             ACInfinityAuthError: If not authenticated (token is None).
             ACInfinityAPIError: If any pagination chunk returns a non-200 code.
+            ACInfinityRateLimitError: If a page is still rejected with 999998
+                after every HISTORY_RATE_LIMIT_BACKOFF_S delay (Quirk 41).
             requests.exceptions.Timeout: After tenacity exhausts retries.
             requests.exceptions.ConnectionError: After tenacity exhausts retries.
         """
@@ -1059,6 +1081,7 @@ class ACInfinityClient:
         all_records: list[dict] = []
         current_start = start_timestamp
         chunk_num = 0
+        interval = self.HISTORY_MIN_INTERVAL_S
 
         while True:
             chunk_num += 1
@@ -1077,12 +1100,34 @@ class ACInfinityClient:
                 "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
             }
 
-            resp = self.session.post(
-                self.HISTORY_ENDPOINT, data=data, headers=headers, timeout=30
-            )
-            resp.raise_for_status()
+            backoffs = iter(self.HISTORY_RATE_LIMIT_BACKOFF_S)
+            while True:
+                self._pace_history_request(interval)
+                resp = self.session.post(
+                    self.HISTORY_ENDPOINT, data=data, headers=headers, timeout=30
+                )
+                resp.raise_for_status()
+                result = resp.json()
+                if result.get("code") != RATE_LIMIT_API_CODE:
+                    break
+                delay = next(backoffs, None)
+                if delay is None:
+                    logger.error(
+                        "History fetch rate limited (chunk %d) after %d backoffs",
+                        chunk_num, len(self.HISTORY_RATE_LIMIT_BACKOFF_S),
+                    )
+                    raise ACInfinityRateLimitError(
+                        f"History API error {RATE_LIMIT_API_CODE}: "
+                        f"{result.get('msg', 'Rate Limiting!')}"
+                    )
+                logger.warning(
+                    "History fetch rate limited (chunk %d); retrying in %.0f s",
+                    chunk_num, delay,
+                )
+                time.sleep(delay)
+                # Pages after a rejection keep at least the gap that worked.
+                interval = max(interval, delay)
 
-            result = resp.json()
             if result.get("code") != 200:
                 error_msg = result.get("msg", "Unknown error")
                 code = result.get("code")
