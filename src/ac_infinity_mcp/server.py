@@ -76,10 +76,12 @@ from ac_infinity_mcp.ports import (
 from ac_infinity_mcp.schema import (
     _ADVANCE_MODE_TYPE,
     _AUTH_ERROR_MSG,
+    RATE_LIMIT_DETAIL,
     ACInfinityAdvanceConflictError,
     ACInfinityAPIError,
     ACInfinityAuthError,
     ACInfinityDeviceError,
+    ACInfinityRateLimitError,
 )
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -1327,6 +1329,9 @@ async def get_historical_readings(
             "error": _AUTH_ERROR_MSG,
             "detail": "see server logs",
         })
+    except ACInfinityRateLimitError as e:
+        logger.error("Rate limited in get_historical_readings: %s", e)
+        return json.dumps({"error": "AC Infinity API error", "detail": RATE_LIMIT_DETAIL})
     except ACInfinityAPIError as e:
         logger.error("API error in get_historical_readings: %s", e)
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
@@ -1701,6 +1706,9 @@ async def detect_environment_trends(device_id: str, days: int = 7) -> str:
             "error": _AUTH_ERROR_MSG,
             "detail": "see server logs",
         })
+    except ACInfinityRateLimitError as e:
+        logger.error("Rate limited in detect_environment_trends: %s", e)
+        return json.dumps({"error": "AC Infinity API error", "detail": RATE_LIMIT_DETAIL})
     except ACInfinityAPIError as e:
         logger.error("API error in detect_environment_trends: %s", e)
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})
@@ -2019,6 +2027,9 @@ async def get_port_activity_report(device_id: str, days: int = 7) -> str:
             "error": _AUTH_ERROR_MSG,
             "detail": "see server logs",
         })
+    except ACInfinityRateLimitError as e:
+        logger.error("Rate limited in get_port_activity_report: %s", e)
+        return json.dumps({"error": "AC Infinity API error", "detail": RATE_LIMIT_DETAIL})
     except ACInfinityAPIError as e:
         logger.error("API error in get_port_activity_report: %s", e)
         return json.dumps({"error": "AC Infinity API error", "detail": "see server logs"})

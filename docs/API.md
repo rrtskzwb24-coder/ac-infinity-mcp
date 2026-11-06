@@ -536,7 +536,7 @@ devId=REDACTED_DEV_ID&externalPort=1&onSpead=5&modeType=2&offSpead=0&...
 
 ---
 
-## All 39 Known API Quirks
+## All 40 Known API Quirks
 
 ### Quirk 1 — Auth typo: `appPasswordl`
 
@@ -2340,6 +2340,28 @@ Issues #326 (encoder) and #328 (decoder). See Quirk 32 for everything else about
 rule encoding, and Quirk 13 for the read-before-write pattern the edit path depends on.
 
 ---
+
+### Quirk 41 — History pages requested back to back are rejected with `999998 Rate Limiting!` (#362)
+
+`POST /api/log/dataPage` answers HTTP 200 with body `{"code": 999998, "msg":
+"Rate Limiting!"}` when pages arrive too fast. Observed 2026-09-26 on an account
+with a devType 20 and a devType 11 controller: the first page of every
+multi-page request succeeded and the second was rejected; single-page requests
+25 s apart all succeeded. It is intermittent: multi-page reads on 09-21 and
+09-24 went through.
+
+Handling (`_get_historical_data_inner`):
+
+- Every history POST, across calls, is at least `HISTORY_MIN_INTERVAL_S` (2 s)
+  after the previous one.
+- On `999998` the same page is retried after `HISTORY_RATE_LIMIT_BACKOFF_S`
+  (15, 30, 60 s). Later pages in that call keep at least the gap that worked.
+- If the page is still rejected, `ACInfinityRateLimitError` (a subclass of
+  `ACInfinityAPIError`, `api_code` 999998) is raised. The history tools report it
+  as a rate limit instead of "see server logs".
+
+Not established: the threshold between back-to-back and 25 s, whether the limit
+is per account or per endpoint, and whether `999998` means anything else.
 
 ## v2.0 API Endpoints Reference
 

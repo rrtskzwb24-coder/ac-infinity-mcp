@@ -47,6 +47,30 @@ class ACInfinityAPIError(ACInfinityError):
     pass
 
 
+# History endpoint rejects pages requested too quickly with this body code and the
+# message "Rate Limiting!" (Quirk 41, #362).
+RATE_LIMIT_API_CODE = 999998
+
+# Tool-facing detail for a history request that stayed rate limited after backoff.
+RATE_LIMIT_DETAIL = (
+    "rate limited by AC Infinity (999998) - wait a minute and retry, "
+    "or request a shorter time range"
+)
+
+
+class ACInfinityRateLimitError(ACInfinityAPIError):
+    """The cloud kept answering ``999998 Rate Limiting!`` after the client backed off.
+
+    A subclass of ACInfinityAPIError so every existing handler still catches it;
+    handlers that know about it can tell the caller to wait instead of pointing at
+    server logs the caller cannot read.
+    """
+
+    def __init__(self, *args: object, api_code: int | None = RATE_LIMIT_API_CODE) -> None:
+        super().__init__(*args)
+        self.api_code = api_code
+
+
 class ACInfinityDeviceError(ACInfinityError):
     """Device not found or invalid."""
     pass
